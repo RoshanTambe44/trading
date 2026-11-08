@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Groww Trading Terminal</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eefcf6',
+              100: '#d5f7e8',
+              500: '#00d09c', // Groww signature green
+              600: '#00b587',
+              700: '#008f6b',
+            },
+            dark: {
+              base: '#0B0F19',
+              card: '#111827',
+              border: '#1F2937',
+              hover: '#1E293B',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="/static/css/custom.css">
+</head>
+<body class="bg-dark-base text-gray-100 min-h-screen font-sans antialiased selection:bg-brand-500 selection:text-black">
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col gap-2"></div>
+
+  <!-- Top Navigation Bar -->
+  <header class="border-b border-dark-border bg-dark-card/80 backdrop-blur-md sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <!-- Logo & System Title -->
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-500 to-emerald-700 flex items-center justify-center shadow-lg shadow-brand-500/20">
+          <i data-lucide="trending-up" class="w-5 h-5 text-gray-950 font-bold"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-lg tracking-tight bg-gradient-to-r from-white via-gray-200 to-gray-400 bg-clip-text text-transparent">Groww Trading Terminal</span>
+            <span class="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-500 border border-brand-500/30">v1.0 Live</span>
+          </div>
+          <p class="text-xs text-gray-400 hidden sm:block">Algorithmic Trading & Portfolio Engine</p>
+        </div>
+      </div>
+
+      <!-- Connection Status & Actions -->
+      <div class="flex items-center gap-3">
+        <!-- Backtester / Strategy Auditor Link -->
+        <a href="/backtester" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 text-xs font-medium transition">
+          <i data-lucide="line-chart" class="w-3.5 h-3.5"></i>
+          <span>9/21 EMA Backtester</span>
+        </a>
+
+        <!-- Live Connection Status Pill -->
+        <div id="conn-pill" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-medium">
+          <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+          <span id="conn-text">Disconnected</span>
+        </div>
+
+        <!-- UCC Badge (Hidden when disconnected) -->
+        <div id="ucc-pill" class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800/80 border border-dark-border text-xs text-gray-300">
+          <span class="text-gray-500 font-mono">UCC:</span>
+          <span id="ucc-val" class="font-mono font-bold text-white tracking-wider">--</span>
+          <button onclick="copyUCC()" title="Copy UCC" class="text-gray-400 hover:text-white ml-1">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+
+        <!-- Refresh Button -->
+        <button id="btn-refresh" onclick="refreshDashboard()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-dark-border text-xs text-gray-200 transition">
+          <i id="refresh-icon" data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
+          <span class="hidden md:inline">Sync Data</span>
+        </button>
+
+        <!-- Connect / Disconnect Buttons -->
+        <button id="btn-open-connect" onclick="openConnectModal()" class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-gray-950 font-semibold text-xs transition shadow-md shadow-brand-500/10">
+          <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
+          <span>Sign In / Connect</span>
+        </button>
+
+        <button id="btn-disconnect" onclick="disconnectGroww()" class="hidden items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs transition">
+          <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
+          <span>Disconnect</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- Hero Stat Cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <!-- Total Invested -->
+      <div class="bg-dark-card border border-dark-border rounded-xl p-5 relative overflow-hidden">
+        <div class="flex items-center justify-between text-gray-400 text-xs font-medium">
+          <span>Holdings Invested Value</span>
+          <div class="p-2 rounded-lg bg-blue-500/10 text-blue-400">
+            <i data-lucide="pie-chart" class="w-4 h-4"></i>
+          </div>
+        </div>
+        <div class="mt-2 flex items-baseline gap-2">
+          <span id="stat-invested" class="text-2xl font-bold font-mono tracking-tight text-white">₹0.00</span>
+        </div>
+        <div class="mt-2 text-xs text-gray-400 flex items-center gap-1">
+          <span id="stat-holdings-count" class="text-brand-500 font-semibold">0</span> stocks in Demat
+        </div>
+      </div>
+
+      <!-- Available Clear Cash -->
+      <div class="bg-dark-card border border-dark-border rounded-xl p-5 relative overflow-hidden">
+        <div class="flex items-center justify-between text-gray-400 text-xs font-medium">
+          <span>Available Cash</span>
+          <div class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
+            <i data-lucide="wallet" class="w-4 h-4"></i>
+          </div>
+        </div>
+        <div class="mt-2 flex items-baseline gap-2">
+          <span id="stat-cash" class="text-2xl font-bold font-mono tracking-tight text-white">₹0.00</span>
+        </div>
+        <div class="mt-2 text-xs text-gray-400 flex items-center gap-1">
+          Clear unencumbered cash balance
+        </div>
+      </div>
+
+      <!-- Net Margin Used -->
+      <div class="bg-dark-card border border-dark-border rounded-xl p-5 relative overflow-hidden">
+        <div class="flex items-center justify-between text-gray-400 text-xs font-medium">
+          <span>Net Margin Used</span>
+          <div class="p-2 rounded-lg bg-amber-500/10 text-amber-400">
+            <i data-lucide="activity" class="w-4 h-4"></i>
+          </div>
+        </div>
+        <div class="mt-2 flex items-baseline gap-2">
+          <span id="stat-margin-used" class="text-2xl font-bold font-mono tracking-tight text-white">₹0.00</span>
+        </div>
+        <div class="mt-2 text-xs text-gray-400">
+          Equity & F&O margin utilized
+        </div>
+      </div>
+
+      <!-- Account Status & Segments -->
+      <div class="bg-dark-card border border-dark-border rounded-xl p-5 relative overflow-hidden">
+        <div class="flex items-center justify-between text-gray-400 text-xs font-medium">
+          <span>Trading Segments</span>
+          <div class="p-2 rounded-lg bg-purple-500/10 text-purple-400">
+            <i data-lucide="shield-check" class="w-4 h-4"></i>
+          </div>
+        </div>
+        <div id="stat-segments" class="mt-2 flex flex-wrap gap-1.5">
+          <span class="px-2 py-0.5 rounded bg-gray-800 text-gray-400 text-xs font-mono">None</span>
+        </div>
+        <div class="mt-2 text-xs text-gray-400">
+          Exchanges: <span id="stat-exchanges" class="text-gray-200 font-medium">--</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="border-b border-dark-border flex space-x-2 sm:space-x-6 text-sm font-medium overflow-x-auto">
+      <button onclick="switchTab('tab-profile')" id="btn-tab-profile" class="tab-btn active pb-3 px-1 border-b-2 border-brand-500 text-brand-500 flex items-center gap-2 whitespace-nowrap">
+        <i data-lucide="user" class="w-4 h-4"></i>
+        <span>Profile & Account</span>
+      </button>
+      <button onclick="switchTab('tab-funds')" id="btn-tab-funds" class="tab-btn pb-3 px-1 border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-2 whitespace-nowrap">
+        <i data-lucide="indian-rupee" class="w-4 h-4"></i>
+        <span>Funds & Margins</span>
+      </button>
+      <button onclick="switchTab('tab-holdings')" id="btn-tab-holdings" class="tab-btn pb-3 px-1 border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-2 whitespace-nowrap">
+        <i data-lucide="briefcase" class="w-4 h-4"></i>
+        <span>Holdings</span>
+        <span id="badge-holdings-count" class="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-gray-800 text-gray-300">0</span>
+      </button>
+      <button onclick="switchTab('tab-positions')" id="btn-tab-positions" class="tab-btn pb-3 px-1 border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-2 whitespace-nowrap">
+        <i data-lucide="layers" class="w-4 h-4"></i>
+        <span>Positions & Orders</span>
+      </button>
+      <button onclick="switchTab('tab-strategy')" id="btn-tab-strategy" class="tab-btn pb-3 px-1 border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-2 whitespace-nowrap">
+        <i data-lucide="code" class="w-4 h-4"></i>
+        <span>Algo & Code Starter</span>
+      </button>
+      <button onclick="switchTab('tab-settings')" id="btn-tab-settings" class="tab-btn pb-3 px-1 border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-2 whitespace-nowrap">
+        <i data-lucide="key" class="w-4 h-4"></i>
+        <span>API Keys / Config</span>
+      </button>
+    </div>
+
+    <!-- TAB 1: Profile & Account -->
+    <div id="tab-profile" class="tab-content space-y-6">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Profile Details Card -->
+        <div class="lg:col-span-2 bg-dark-card border border-dark-border rounded-xl p-6">
+          <div class="flex items-center justify-between border-b border-dark-border pb-4 mb-4">
+            <div>
+              <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                <i data-lucide="user-check" class="w-5 h-5 text-brand-500"></i>
+                Groww Demat Account Details
+              </h2>
+              <p class="text-xs text-gray-400">Authenticated via Groww Trade API</p>
+            </div>
+            <span id="profile-badge-active" class="px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              Active Session
+            </span>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+            <div class="p-3.5 rounded-lg bg-dark-base border border-dark-border">
+              <span class="text-xs text-gray-400">Unique Client Code (UCC)</span>
+              <p id="prof-ucc" class="text-base font-bold font-mono text-white mt-1">--</p>
+            </div>
+            <div class="p-3.5 rounded-lg bg-dark-base border border-dark-border">
+              <span class="text-xs text-gray-400">Vendor User ID</span>
+              <p id="prof-vendor-id" class="text-xs font-mono text-gray-300 mt-1 truncate" title="">--</p>
+            </div>
+            <div class="p-3.5 rounded-lg bg-dark-base border border-dark-border">
+              <span class="text-xs text-gray-400">NSE Status</span>
+              <p id="prof-nse" class="text-sm font-semibold text-white mt-1 flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-gray-500"></span> Not Checked
+              </p>
+            </div>
+            <div class="p-3.5 rounded-lg bg-dark-base border border-dark-border">
+              <span class="text-xs text-gray-400">BSE Status</span>
+              <p id="prof-bse" class="text-sm font-semibold text-white mt-1 flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-gray-500"></span> Not Checked
+              </p>
+            </div>
+            <div class="p-3.5 rounded-lg bg-dark-base border border-dark-border">
+              <span class="text-xs text-gray-400">DDPI (Demat Debit and Pledge)</span>
+              <p id="prof-ddpi" class="text-sm font-semibold text-gray-300 mt-1">--</p>
+            </div>
+            <div class="p-3.5 rounded-lg bg-dark-base border border-dark-border">
+              <span class="text-xs text-gray-400">Last Synced At</span>
+              <p id="prof-synced-at" class="text-sm font-mono text-gray-300 mt-1">--</p>
+            </div>
+          </div>
+
+          <div class="mt-4 pt-4 border-t border-dark-border flex flex-wrap gap-2 items-center justify-between">
+            <div class="text-xs text-gray-400">
+              Active Trade Segments:
+              <span id="prof-segments-inline" class="text-gray-200 font-semibold ml-1">--</span>
+            </div>
+            <button onclick="refreshDashboard()" class="text-xs text-brand-500 hover:text-brand-400 flex items-center gap-1">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh Profile
+            </button>
+          </div>
+        </div>
+
+        <!-- Session Status & Quick Actions -->
+        <div class="bg-dark-card border border-dark-border rounded-xl p-6 flex flex-col justify-between">
+          <div>
+            <h3 class="text-base font-semibold text-white mb-2 flex items-center gap-2">
+              <i data-lucide="cpu" class="w-4 h-4 text-blue-400"></i>
+              System Architecture
+            </h3>
+            <p class="text-xs text-gray-400 mb-4 leading-relaxed">
+              Your trading terminal is connected via the official Groww API client. Tokens are securely encrypted and automatically re-used until the daily 6:00 AM IST expiration.
+            </p>
+
+            <div class="space-y-3 text-xs">
+              <div class="flex justify-between items-center py-2 border-b border-dark-border">
+                <span class="text-gray-400">Auth Method</span>
+                <span class="text-gray-200 font-mono font-medium">TOTP / API Secret</span>
+              </div>
+              <div class="flex justify-between items-center py-2 border-b border-dark-border">
+                <span class="text-gray-400">Environment</span>
+                <span class="text-emerald-400 font-semibold">Python 3.12 + Flask</span>
+              </div>
+              <div class="flex justify-between items-center py-2 border-b border-dark-border">
+                <span class="text-gray-400">Project Directory</span>
+                <span class="text-gray-300 font-mono text-[11px] truncate max-w-[150px]">Groww-Trading-Project</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-6 pt-4 border-t border-dark-border space-y-2">
+            <button onclick="openConnectModal()" class="w-full py-2 px-3 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs text-gray-200 font-medium transition flex items-center justify-center gap-2">
+              <i data-lucide="settings" class="w-3.5 h-3.5"></i> Re-authenticate / Rotate Key
+            </button>
+            <a href="https://groww.in/trade-api" target="_blank" class="w-full py-2 px-3 rounded-lg border border-dark-border hover:bg-dark-base text-xs text-gray-400 hover:text-white transition flex items-center justify-center gap-2">
+              <i data-lucide="external-link" class="w-3.5 h-3.5"></i> Groww Trade Portal
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Funds & Margins -->
+    <div id="tab-funds" class="tab-content hidden space-y-6">
+      <div class="bg-dark-card border border-dark-border rounded-xl p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h2 class="text-base font-semibold text-white flex items-center gap-2">
+              <i data-lucide="wallet" class="w-5 h-5 text-emerald-400"></i>
+              Account Balances & Margin Allocation
+            </h2>
+            <p class="text-xs text-gray-400">Live margin limits across Cash, F&O, and Commodities</p>
+          </div>
+          <button onclick="fetchFunds()" class="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 flex items-center gap-1.5 transition">
+            <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> Refresh Funds
+          </button>
+        </div>
+
+        <!-- Funds Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div class="p-4 rounded-xl bg-dark-base border border-dark-border">
+            <span class="text-xs text-gray-400 font-medium">Clear Cash Balance</span>
+            <div id="funds-clear-cash" class="text-2xl font-bold font-mono text-emerald-400 mt-1">₹0.00</div>
+            <p class="text-[11px] text-gray-500 mt-1">Available for immediate equity/F&O purchases</p>
+          </div>
+
+          <div class="p-4 rounded-xl bg-dark-base border border-dark-border">
+            <span class="text-xs text-gray-400 font-medium">Net Margin Used</span>
+            <div id="funds-margin-used" class="text-2xl font-bold font-mono text-amber-400 mt-1">₹0.00</div>
+            <p class="text-[11px] text-gray-500 mt-1">Total margin blocked in open positions</p>
+          </div>
+
+          <div class="p-4 rounded-xl bg-dark-base border border-dark-border">
+            <span class="text-xs text-gray-400 font-medium">Collateral Available</span>
+            <div id="funds-collateral" class="text-2xl font-bold font-mono text-blue-400 mt-1">₹0.00</div>
+            <p class="text-[11px] text-gray-500 mt-1">Margin from pledged holdings</p>
+          </div>
+        </div>
+
+        <!-- Segment Breakdown Tables -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- Equity Segment Details -->
+          <div class="border border-dark-border rounded-xl p-4 bg-dark-base/50">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5 mb-3">
+              <i data-lucide="bar-chart-2" class="w-4 h-4 text-brand-500"></i> Equity Margins
+            </h3>
+            <div class="space-y-2 text-xs">
+              <div class="flex justify-between py-1.5 border-b border-dark-border/60">
+                <span class="text-gray-400">CNC (Cash & Carry) Balance</span>
+                <span id="eq-cnc-bal" class="font-mono font-medium text-white">₹0.00</span>
+              </div>
+              <div class="flex justify-between py-1.5 border-b border-dark-border/60">
+                <span class="text-gray-400">MIS (Intraday) Balance</span>
+                <span id="eq-mis-bal" class="font-mono font-medium text-white">₹0.00</span>
+              </div>
+              <div class="flex justify-between py-1.5 border-b border-dark-border/60">
+                <span class="text-gray-400">CNC Margin Used</span>
+                <span id="eq-cnc-used" class="font-mono font-medium text-gray-300">₹0.00</span>
+              </div>
+              <div class="flex justify-between py-1.5">
+                <span class="text-gray-400">MIS Margin Used</span>
+                <span id="eq-mis-used" class="font-mono font-medium text-gray-300">₹0.00</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- F&O Segment Details -->
+          <div class="border border-dark-border rounded-xl p-4 bg-dark-base/50">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5 mb-3">
+              <i data-lucide="zap" class="w-4 h-4 text-purple-400"></i> Futures & Options (F&O)
+            </h3>
+            <div class="space-y-2 text-xs">
+              <div class="flex justify-between py-1.5 border-b border-dark-border/60">
+                <span class="text-gray-400">Futures Available Balance</span>
+                <span id="fno-fut-bal" class="font-mono font-medium text-white">₹0.00</span>
+              </div>
+              <div class="flex justify-between py-1.5 border-b border-dark-border/60">
+                <span class="text-gray-400">Option Buying Balance</span>
+                <span id="fno-opt-buy-bal" class="font-mono font-medium text-white">₹0.00</span>
+              </div>
+              <div class="flex justify-between py-1.5 border-b border-dark-border/60">
+                <span class="text-gray-400">SPAN Margin Used</span>
+                <span id="fno-span-used" class="font-mono font-medium text-gray-300">₹0.00</span>
+              </div>
+              <div class="flex justify-between py-1.5">
+                <span class="text-gray-400">Exposure Margin Used</span>
+                <span id="fno-exp-used" class="font-mono font-medium text-gray-300">₹0.00</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Holdings -->
+    <div id="tab-holdings" class="tab-content hidden space-y-6">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Holdings Table (2 Cols) -->
+        <div class="lg:col-span-2 bg-dark-card border border-dark-border rounded-xl p-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                <i data-lucide="briefcase" class="w-5 h-5 text-brand-500"></i>
+                Demat Equity Holdings
+              </h2>
+              <p class="text-xs text-gray-400">Stocks held in your Groww demat account</p>
+            </div>
+            <div class="flex items-center gap-2 w-full sm:w-auto">
+              <input type="text" id="holding-search" oninput="filterHoldings()" placeholder="Filter symbols..." class="w-full sm:w-44 px-3 py-1.5 rounded-lg bg-dark-base border border-dark-border text-xs text-gray-200 focus:outline-none focus:border-brand-500">
+              <button onclick="fetchHoldings()" class="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 transition">
+                <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="text-[11px] uppercase tracking-wider text-gray-400 bg-dark-base border-y border-dark-border">
+                <tr>
+                  <th class="py-3 px-3">Symbol / ISIN</th>
+                  <th class="py-3 px-3 text-right">Quantity</th>
+                  <th class="py-3 px-3 text-right">Avg Price</th>
+                  <th class="py-3 px-3 text-right">Invested Value</th>
+                  <th class="py-3 px-3 text-right">Weight</th>
+                  <th class="py-3 px-3 text-center">Exchanges</th>
+                </tr>
+              </thead>
+              <tbody id="holdings-tbody" class="divide-y divide-dark-border">
+                <tr>
+                  <td colspan="6" class="py-8 text-center text-gray-500">
+                    <div class="flex flex-col items-center gap-2">
+                      <i data-lucide="loader-2" class="w-6 h-6 animate-spin text-brand-500"></i>
+                      <span>Loading holdings from Groww...</span>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Portfolio Allocation Donut Chart -->
+        <div class="bg-dark-card border border-dark-border rounded-xl p-6 flex flex-col justify-between">
+          <div>
+            <h3 class="text-base font-semibold text-white mb-2 flex items-center gap-2">
+              <i data-lucide="pie-chart" class="w-4 h-4 text-brand-500"></i>
+              Asset Allocation
+            </h3>
+            <p class="text-xs text-gray-400 mb-4">Holdings distribution by invested value</p>
+            <div class="relative w-full aspect-square max-h-56 mx-auto flex items-center justify-center">
+              <canvas id="holdingsChart"></canvas>
+            </div>
+          </div>
+
+          <div id="chart-legend" class="mt-4 space-y-1.5 text-xs border-t border-dark-border pt-3">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: Positions & Orders -->
+    <div id="tab-positions" class="tab-content hidden space-y-6">
+      <!-- Positions -->
+      <div class="bg-dark-card border border-dark-border rounded-xl p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="text-base font-semibold text-white flex items-center gap-2">
+              <i data-lucide="layers" class="w-5 h-5 text-blue-400"></i>
+              Day & Net Positions
+            </h2>
+            <p class="text-xs text-gray-400">Open intraday and delivery positions for the trading session</p>
+          </div>
+          <button onclick="fetchPositions()" class="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 flex items-center gap-1.5 transition">
+            <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> Refresh Positions
+          </button>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="text-[11px] uppercase tracking-wider text-gray-400 bg-dark-base border-y border-dark-border">
+              <tr>
+                <th class="py-3 px-3">Symbol</th>
+                <th class="py-3 px-3">Segment</th>
+                <th class="py-3 px-3 text-right">Net Qty</th>
+                <th class="py-3 px-3 text-right">Buy Avg</th>
+                <th class="py-3 px-3 text-right">Sell Avg</th>
+                <th class="py-3 px-3 text-right">Unrealized P&L</th>
+              </tr>
+            </thead>
+            <tbody id="positions-tbody" class="divide-y divide-dark-border">
+              <tr>
+                <td colspan="6" class="py-6 text-center text-gray-500">No open positions currently.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Orders -->
+      <div class="bg-dark-card border border-dark-border rounded-xl p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="text-base font-semibold text-white flex items-center gap-2">
+              <i data-lucide="clipboard-list" class="w-5 h-5 text-purple-400"></i>
+              Order Book
+            </h2>
+            <p class="text-xs text-gray-400">Recent market, limit, and trigger orders</p>
+          </div>
+          <button onclick="fetchOrders()" class="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 flex items-center gap-1.5 transition">
+            <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> Refresh Orders
+          </button>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="text-[11px] uppercase tracking-wider text-gray-400 bg-dark-base border-y border-dark-border">
+              <tr>
+                <th class="py-3 px-3">Order ID / Time</th>
+                <th class="py-3 px-3">Symbol</th>
+                <th class="py-3 px-3">Type</th>
+                <th class="py-3 px-3">Side</th>
+                <th class="py-3 px-3 text-right">Qty</th>
+                <th class="py-3 px-3 text-right">Price</th>
+                <th class="py-3 px-3 text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody id="orders-tbody" class="divide-y divide-dark-border">
+              <tr>
+                <td colspan="7" class="py-6 text-center text-gray-500">No orders placed today.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: Algo & Code Starter -->
+    <div id="tab-strategy" class="tab-content hidden space-y-6">
+      <div class="bg-dark-card border border-dark-border rounded-xl p-6">
+        <h2 class="text-base font-semibold text-white flex items-center gap-2 mb-2">
+          <i data-lucide="terminal" class="w-5 h-5 text-brand-500"></i>
+          Build Your Trading Strategies
+        </h2>
+        <p class="text-xs text-gray-400 mb-6">
+          You have full programmatic access to Groww's live Python SDK (<code class="text-brand-500">growwapi</code>). You can create automated algorithms, EMA/RSI crossover bots, stop-loss guards, and basket orders directly in Python.
+        </p>
+
+        <!-- Code Snippet -->
+        <div class="relative bg-dark-base rounded-xl border border-dark-border p-4 font-mono text-xs overflow-x-auto text-gray-200">
+          <div class="flex items-center justify-between pb-3 mb-3 border-b border-dark-border text-gray-400 text-[11px]">
+            <span>example_strategy.py</span>
+            <button onclick="copySnippet()" class="hover:text-white flex items-center gap-1">
+              <i data-lucide="copy" class="w-3.5 h-3.5"></i> Copy Code
+            </button>
+          </div>
+<pre id="code-snippet"><code>from growwapi import GrowwAPI
+from groww_service import groww_service
+
+# 1. Use the authenticated client instance
+client = groww_service.api_client
+
+# 2. Query available funds
+funds = client.get_available_margin_details()
+print("Available Clear Cash:", funds.get("clear_cash"))
+
+# 3. Place an intraday/cash order example
+# order = client.place_order(
+#     trading_symbol="ITC",
+#     exchange=GrowwAPI.EXCHANGE_NSE,
+#     transaction_type=GrowwAPI.TRANSACTION_TYPE_BUY,
+#     order_type=GrowwAPI.ORDER_TYPE_LIMIT,
+#     quantity=1,
+#     price=280.0,
+#     product=GrowwAPI.PRODUCT_CNC,
+#     validity=GrowwAPI.VALIDITY_DAY
+# )
+# print("Order Response:", order)
+</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 6: Settings & Keys -->
+    <div id="tab-settings" class="tab-content hidden space-y-6">
+      <div class="max-w-2xl bg-dark-card border border-dark-border rounded-xl p-6">
+        <h2 class="text-base font-semibold text-white flex items-center gap-2 mb-2">
+          <i data-lucide="key" class="w-5 h-5 text-amber-400"></i>
+          Groww API Credentials Configuration
+        </h2>
+        <p class="text-xs text-gray-400 mb-6">
+          Your credentials are read from <code class="text-brand-500">keys.txt</code> in your project directory. You can also update them here.
+        </p>
+
+        <form id="keys-form" onsubmit="saveKeys(event)" class="space-y-4 text-xs">
+          <div>
+            <label class="block text-gray-300 font-medium mb-1">Groww API Key (JWT Token)</label>
+            <textarea id="input-api-key" rows="3" class="w-full px-3 py-2 rounded-lg bg-dark-base border border-dark-border text-gray-200 font-mono focus:outline-none focus:border-brand-500" placeholder="eyJraWQiOiJaTUtj..."></textarea>
+            <span class="text-[11px] text-gray-500">Obtained from your Groww developer trade portal</span>
+          </div>
+
+          <div>
+            <label class="block text-gray-300 font-medium mb-1">Groww API Secret (Approval Secret)</label>
+            <input type="text" id="input-api-secret" class="w-full px-3 py-2 rounded-lg bg-dark-base border border-dark-border text-gray-200 font-mono focus:outline-none focus:border-brand-500" placeholder="ZG-d(NS7&... (Optional if using TOTP code)">
+          </div>
+
+          <div>
+            <label class="block text-gray-300 font-medium mb-1">TOTP Secret Seed (Optional for automatic pyotp TOTP generation)</label>
+            <input type="text" id="input-totp-secret" class="w-full px-3 py-2 rounded-lg bg-dark-base border border-dark-border text-gray-200 font-mono focus:outline-none focus:border-brand-500" placeholder="e.g. JBSWY3DPEHPK3PXP">
+            <span class="text-[11px] text-gray-500">If you have a 16-32 character base32 TOTP secret from authenticator setup</span>
+          </div>
+
+          <div class="pt-4 flex items-center gap-3">
+            <button type="submit" class="px-4 py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-gray-950 font-semibold transition">
+              Save to keys.txt & Reconnect
+            </button>
+            <button type="button" onclick="testConnectionWithSavedKeys()" class="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 transition">
+              Test Connection
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Connect / Sign-In Modal -->
+  <div id="connect-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-dark-card border border-dark-border rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+      <button onclick="closeConnectModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white">
+        <i data-lucide="x" class="w-5 h-5"></i>
+      </button>
+
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-xl bg-brand-500/10 border border-brand-500/30 flex items-center justify-center text-brand-500">
+          <i data-lucide="log-in" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <h3 class="text-base font-bold text-white">Connect to Groww</h3>
+          <p class="text-xs text-gray-400">Authenticate using your keys or 2FA TOTP</p>
+        </div>
+      </div>
+
+      <!-- Sign In Choice Tabs -->
+      <div class="grid grid-cols-2 gap-2 p-1 bg-dark-base rounded-xl mb-4 text-xs font-medium">
+        <button id="modal-tab-saved" onclick="switchModalMode('saved')" class="py-1.5 px-3 rounded-lg bg-brand-500 text-gray-950 font-bold transition">
+          Saved Keys
+        </button>
+        <button id="modal-tab-totp" onclick="switchModalMode('totp')" class="py-1.5 px-3 rounded-lg text-gray-400 hover:text-white transition">
+          Enter TOTP Code
+        </button>
+      </div>
+
+      <!-- Mode 1: Connect with Saved Keys -->
+      <div id="modal-mode-saved" class="space-y-4">
+        <div class="p-3.5 rounded-xl bg-dark-base border border-dark-border text-xs text-gray-300 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400">Key File:</span>
+            <span class="font-mono text-emerald-400">keys.txt / key.txt</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400">Saved API Key:</span>
+            <span id="modal-saved-key-preview" class="font-mono text-gray-200">Loaded</span>
+          </div>
+        </div>
+
+        <button onclick="loginWithSavedKeys()" id="btn-modal-saved-connect" class="w-full py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-gray-950 font-bold text-xs transition shadow-lg shadow-brand-500/10 flex items-center justify-center gap-2">
+          <i data-lucide="zap" class="w-4 h-4"></i>
+          <span>Connect Now</span>
+        </button>
+      </div>
+
+      <!-- Mode 2: Enter TOTP 6-Digit Code -->
+      <div id="modal-mode-totp" class="hidden space-y-4">
+        <div class="text-xs text-gray-400">
+          Enter the current 6-digit Time-based One-Time Password (TOTP) from your authenticator app (Google Authenticator, Microsoft Authenticator):
+        </div>
+
+        <div>
+          <input type="text" id="modal-totp-input" maxlength="6" placeholder="000000" class="w-full text-center tracking-widest text-xl font-mono py-2.5 rounded-xl bg-dark-base border border-dark-border text-white focus:outline-none focus:border-brand-500">
+        </div>
+
+        <button onclick="loginWithTotpCode()" id="btn-modal-totp-connect" class="w-full py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-gray-950 font-bold text-xs transition shadow-lg shadow-brand-500/10 flex items-center justify-center gap-2">
+          <i data-lucide="shield-check" class="w-4 h-4"></i>
+          <span>Verify & Connect</span>
+        </button>
+      </div>
+
+      <div id="modal-error" class="hidden mt-3 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs"></div>
+    </div>
+  </div>
+
+  <script src="/static/js/dashboard.js"></script>
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>

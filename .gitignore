@@ -1,0 +1,80 @@
+# ============================================
+# Python & Bytecode
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ============================================
+# Virtual Environments
+# ============================================
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ============================================
+# Sensitive API Keys & Credentials
+# ============================================
+keys.txt
+key.txt
+token.txt
+.env
+*.env
+.session_cache.json
+*.pem
+*.key
+
+# ============================================
+# Databases & Local SQLite Storage
+# ============================================
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+nifty_trading.db
+
+# ============================================
+# Logs & Output Exports
+# ============================================
+*.log
+*.tmp
+*.csv
+logs/
+
+# ============================================
+# Operating System & Editor Metadata
+# ============================================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
