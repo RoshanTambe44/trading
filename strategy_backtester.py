@@ -92,11 +92,36 @@ def calculate_trade_costs(
     entry_premium: float,
     exit_premium: float,
     lot_size: int = LOT_SIZE,
+    is_us: bool = False,
 ) -> Dict[str, float]:
     """
-    Calculates detailed Indian options cost stack and slippage.
-    Slippage: 0.5% of premium + 0.10 pts; sell price floored at 0.05 tick.
+    Calculates trade costs.
+    - If is_us=True: Zero commission US broker model ($0 brokerage, $0.02/share slippage, SEC fee).
+    - If is_us=False: Comprehensive Indian options cost stack and slippage.
     """
+    if is_us:
+        # Direct Shares for US Stocks (or options contracts)
+        is_short = (mode == "SHORT")
+        gross_pnl = (entry_premium - exit_premium) * lot_size if is_short else (exit_premium - entry_premium) * lot_size
+        slippage = round(0.02 * lot_size, 2)
+        sell_turnover = max(entry_premium, exit_premium) * lot_size
+        sec_fee = round(max(0.01, sell_turnover * 0.0000278), 2)
+        total_friction = round(slippage + sec_fee, 2)
+        net_pnl = round(gross_pnl - total_friction, 2)
+
+        return {
+            "gross_pnl": round(gross_pnl, 2),
+            "slippage": slippage,
+            "brokerage": 0.0,
+            "stt": 0.0,
+            "exchange_charges": sec_fee,
+            "sebi_charges": 0.0,
+            "stamp_duty": 0.0,
+            "gst": 0.0,
+            "total_friction": total_friction,
+            "net_pnl": net_pnl,
+        }
+
     is_seller = (mode == "ATM_SELL")
 
     # Slippage
@@ -160,9 +185,19 @@ def calculate_trade_costs(
 
 # --- Resampling & Indicators ---
 
-def resample_bars(df_1m: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+def is_time_in_window(t: dtime, start: dtime, cutoff: dtime) -> bool:
+    """Checks whether time t is inside the entry window, handling overnight sessions."""
+    if start <= cutoff:
+        return start <= t <= cutoff
+    else:
+        # Crosses midnight (e.g. 20:00 to 02:00 IST)
+        return t >= start or t <= cutoff
+
+
+def resample_bars(df_1m: pd.DataFrame, timeframe: str, is_us: bool = False) -> pd.DataFrame:
     """
-    Resamples 1m spot bars to 5m, 15m, or 30m, aligned strictly to 09:15 open.
+    Resamples 1m spot bars to 5m, 15m, or 30m.
+    If is_us=True: groups across midnight so US evening sessions (20:00 to 02:30 IST) remain together.
     """
     if df_1m.empty:
         return pd.DataFrame()
@@ -171,8 +206,14 @@ def resample_bars(df_1m: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     rule = rule_map.get(timeframe, "15min")
 
     resampled_days = []
-    # Resample day by day so bars don't bleed across overnight gaps
-    for date, group in df_1m.groupby(df_1m.index.date):
+    if is_us:
+        # Shift 6 hours so overnight session (20:00 to 02:30 IST) falls into one single trading day
+        session_dates = (df_1m.index - pd.Timedelta(hours=6)).date
+        grouper = df_1m.groupby(session_dates)
+    else:
+        grouper = df_1m.groupby(df_1m.index.date)
+
+    for date, group in grouper:
         daily_res = group.resample(rule, origin="start").agg({
             "open": "first",
             "high": "max",
@@ -202,15 +243,20 @@ def run_backtest(
     mode: str = "ATM_BUY",
     start_time_str: str = "09:30",
     cutoff_time_str: str = "14:30",
+    symbol: str = "^NSEI",
 ) -> Dict[str, Any]:
     """
     Executes the 9/21 EMA crossover strategy backtest across the provided 1m dataset.
+    Supports both Indian NIFTY Options and US Stocks / ETFs (SPY, QQQ, TSLA, NVDA, AAPL).
     """
     if df_1m.empty:
         return {"summary": {}, "trades": []}
 
-    res_df = resample_bars(df_1m, timeframe)
-    if res_df.empty or len(res_df) < 25:
+    sym = symbol.upper().strip()
+    is_us = sym not in ["^NSEI", "NIFTY", "NIFTY50", "NIFTY 50"]
+
+    res_df = resample_bars(df_1m, timeframe, is_us=is_us)
+    if res_df.empty or len(res_df) < 15:
         return {"summary": {}, "trades": []}
 
     # Parse start and cutoff times
@@ -218,15 +264,20 @@ def run_backtest(
     cutoff_h, cutoff_m = map(int, cutoff_time_str.split(":"))
     t_start = dtime(start_h, start_m)
     t_cutoff = dtime(cutoff_h, cutoff_m)
-    t_squareoff = dtime(15, 0)  # Mandatory square-off at 15:00
 
     trades: List[Dict[str, Any]] = []
     trade_counter = 0
 
-    # Process day by day
-    for trade_date, day_bars in res_df.groupby(res_df.index.date):
+    if is_us:
+        session_dates = (res_df.index - pd.Timedelta(hours=6)).date
+        grouper = res_df.groupby(session_dates)
+    else:
+        grouper = res_df.groupby(res_df.index.date)
+
+    # Process session by session
+    for trade_date, day_bars in grouper:
         day_bars = day_bars.copy()
-        if len(day_bars) < 5:
+        if len(day_bars) < 3:
             continue
 
         active_trade: Optional[Dict[str, Any]] = None
@@ -245,11 +296,16 @@ def run_backtest(
             bullish_cross = (prev_diff <= 0.0 and curr_diff > 0.0)
             bearish_cross = (prev_diff >= 0.0 and curr_diff < 0.0)
 
-            # Mandatory square-off at 15:00
-            if active_trade and bar_time >= t_squareoff:
+            # Mandatory square-off check
+            if is_us:
+                is_squareoff = (bar_time >= dtime(2, 25) and bar_time < dtime(20, 0))
+            else:
+                is_squareoff = (bar_time >= dtime(15, 0))
+
+            if active_trade and is_squareoff:
                 exit_spot = curr_bar["close"]
                 exit_time = curr_bar.name
-                _close_trade(active_trade, exit_time, exit_spot, "MANDATORY_1500", trades, mode)
+                _close_trade(active_trade, exit_time, exit_spot, "MANDATORY_CLOSE", trades, mode, is_us)
                 active_trade = None
 
             # Handle Crossover Signals
@@ -262,29 +318,29 @@ def run_backtest(
                     if active_trade["direction"] != new_direction:
                         exit_spot = curr_bar["close"]
                         exit_time = curr_bar.name
-                        _close_trade(active_trade, exit_time, exit_spot, "OPPOSITE_CROSSOVER", trades, mode)
+                        _close_trade(active_trade, exit_time, exit_spot, "OPPOSITE_CROSSOVER", trades, mode, is_us)
                         active_trade = None
 
                         # Immediate Reversal: open reverse trade if still inside entry window
-                        if t_start <= bar_time <= t_cutoff:
+                        if is_time_in_window(bar_time, t_start, t_cutoff):
                             trade_counter += 1
                             active_trade = _create_trade(
                                 trade_counter, day_cross_count, new_direction,
-                                curr_bar.name, curr_bar["close"], mode, trade_date
+                                curr_bar.name, curr_bar["close"], mode, trade_date, sym, is_us
                             )
                 else:
                     # Not in trade: check if within entry window
-                    if t_start <= bar_time <= t_cutoff:
+                    if is_time_in_window(bar_time, t_start, t_cutoff):
                         trade_counter += 1
                         active_trade = _create_trade(
                             trade_counter, day_cross_count, new_direction,
-                            curr_bar.name, curr_bar["close"], mode, trade_date
+                            curr_bar.name, curr_bar["close"], mode, trade_date, sym, is_us
                         )
 
         # End of day check: if a trade is somehow still open, force close it at last bar
         if active_trade:
             last_bar = day_bars.iloc[-1]
-            _close_trade(active_trade, last_bar.name, last_bar["close"], "CUTOFF_SQUAREOFF", trades, mode)
+            _close_trade(active_trade, last_bar.name, last_bar["close"], "CUTOFF_SQUAREOFF", trades, mode, is_us)
             active_trade = None
 
     # Calculate summary metrics
@@ -293,6 +349,8 @@ def run_backtest(
     return {
         "summary": summary,
         "trades": trades,
+        "symbol": sym,
+        "currency": "$" if is_us else "₹",
     }
 
 
@@ -304,8 +362,36 @@ def _create_trade(
     entry_spot: float,
     mode: str,
     trade_date: Any,
+    symbol: str = "^NSEI",
+    is_us: bool = False,
 ) -> Dict[str, Any]:
-    """Initializes a new trade record with option parameters."""
+    """Initializes a new trade record with option or share parameters."""
+    if is_us:
+        # Standard US direct share trade
+        shares = 10
+        if "50" in mode:
+            shares = 50
+        elif "100" in mode:
+            shares = 100
+
+        return {
+            "id": str(uuid.uuid4()),
+            "trade_number": trade_num,
+            "cross_number": cross_num,
+            "direction": direction,
+            "symbol": symbol,
+            "entry_time": entry_time,
+            "entry_spot": entry_spot,
+            "strike": int(round(entry_spot)),
+            "option_type": "SHARES",
+            "expiry_date": "N/A",
+            "dte": 0,
+            "entry_premium": entry_spot,
+            "entry_bar_time": entry_time,
+            "shares": shares,
+            "currency": "$",
+        }
+
     strike, opt_type = get_strike_for_mode(entry_spot, mode, direction)
     dte_days = 2.0  # Approx weekly DTE for standard testing
 
@@ -321,6 +407,7 @@ def _create_trade(
         "trade_number": trade_num,
         "cross_number": cross_num,
         "direction": direction,
+        "symbol": symbol,
         "entry_time": entry_time,
         "entry_spot": entry_spot,
         "strike": strike,
@@ -329,6 +416,7 @@ def _create_trade(
         "dte": int(dte_days),
         "entry_premium": entry_prem,
         "entry_bar_time": entry_time,
+        "currency": "₹",
     }
 
 
@@ -339,11 +427,35 @@ def _close_trade(
     exit_reason: str,
     trades_list: List[Dict[str, Any]],
     mode: str,
+    is_us: bool = False,
 ):
-    """Calculates exit option price, friction, and appends to completed trades."""
-    # Compute elapsed intraday time in days for theta decay
+    """Calculates exit price, friction, and appends to completed trades."""
     minutes_elapsed = max(1, (exit_time - trade["entry_time"]).total_seconds() / 60.0)
-    decay_fraction = minutes_elapsed / (375.0 * 5.0)  # Fraction of weekly time
+
+    if is_us:
+        shares = trade.get("shares", 10)
+        cost_data = calculate_trade_costs(
+            mode=trade["direction"],
+            entry_premium=trade["entry_premium"],
+            exit_premium=exit_spot,
+            lot_size=shares,
+            is_us=True,
+        )
+        is_whipsaw = (exit_reason == "OPPOSITE_CROSSOVER" and cost_data["net_pnl"] < 0 and minutes_elapsed <= 30)
+
+        trade.update({
+            "exit_time": exit_time,
+            "exit_spot": exit_spot,
+            "exit_premium": exit_spot,
+            "exit_reason": exit_reason,
+            "is_whipsaw": is_whipsaw,
+            **cost_data,
+        })
+        trades_list.append(trade)
+        return
+
+    # NIFTY Options
+    decay_fraction = minutes_elapsed / (375.0 * 5.0)
     dte_at_exit = max(0.01, trade["dte"] - decay_fraction)
 
     exit_prem = black_scholes_price(
@@ -353,15 +465,14 @@ def _close_trade(
         opt_type=trade["option_type"],
     )
 
-    # Cost stack calculation
     cost_data = calculate_trade_costs(
         mode=mode,
         entry_premium=trade["entry_premium"],
         exit_premium=exit_prem,
         lot_size=LOT_SIZE,
+        is_us=False,
     )
 
-    # Whipsaw detection: closed due to opposite cross within <= 30 mins at a loss
     is_whipsaw = (exit_reason == "OPPOSITE_CROSSOVER" and cost_data["net_pnl"] < 0 and minutes_elapsed <= 30)
 
     trade.update({
@@ -374,6 +485,7 @@ def _close_trade(
     })
 
     trades_list.append(trade)
+
 
 
 def calculate_summary_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -436,18 +548,18 @@ def calculate_summary_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
     max_dd_pct = round((max_dd_amount / initial_capital) * 100, 2)
 
     return {
-        "total_trades": total_trades,
-        "winning_trades": winning_count,
-        "losing_trades": losing_count,
-        "win_rate": win_rate,
-        "gross_pnl": gross_pnl,
-        "total_friction": total_friction,
-        "net_pnl": net_pnl,
-        "profit_factor": profit_factor,
-        "payoff_ratio": payoff_ratio,
-        "expectancy": expectancy,
-        "max_drawdown_amount": max_dd_amount,
-        "max_drawdown_pct": max_dd_pct,
+        "total_trades": int(total_trades),
+        "winning_trades": int(winning_count),
+        "losing_trades": int(losing_count),
+        "win_rate": float(win_rate),
+        "gross_pnl": float(gross_pnl),
+        "total_friction": float(total_friction),
+        "net_pnl": float(net_pnl),
+        "profit_factor": float(profit_factor),
+        "payoff_ratio": float(payoff_ratio),
+        "expectancy": float(expectancy),
+        "max_drawdown_amount": float(max_dd_amount),
+        "max_drawdown_pct": float(max_dd_pct),
     }
 
 

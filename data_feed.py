@@ -7,7 +7,7 @@ import yfinance as yf
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from database import SessionLocal, NiftyCandle1M, init_db
+from database import SessionLocal, NiftyCandle1M, StockCandle1M, init_db
 from groww_service import groww_service
 from growwapi import GrowwAPI
 
@@ -248,3 +248,114 @@ def get_data_summary() -> Dict[str, Any]:
         }
     finally:
         db.close()
+
+
+def fetch_stock_candles_yfinance(symbol: str, period: str = "7d") -> pd.DataFrame:
+    """
+    Downloads real 1-minute candlestick data for any US stock/ETF (SPY, QQQ, TSLA, NVDA, AAPL)
+    from Yahoo Finance, converts timezone to IST (Asia/Kolkata), and caches to database.
+    """
+    try:
+        logger.info(f"Downloading 1-minute data for {symbol} (period={period})...")
+        df = yf.download(symbol, period=period, interval="1m", progress=False)
+        if df.empty:
+            return pd.DataFrame()
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df = df.dropna()
+        # Convert index from US market timezone to Indian Standard Time (IST)
+        if df.index.tz is not None:
+            df = df.tz_convert("Asia/Kolkata").tz_localize(None)
+
+        clean_df = pd.DataFrame({
+            "open": df["Open"].astype(float).round(2),
+            "high": df["High"].astype(float).round(2),
+            "low": df["Low"].astype(float).round(2),
+            "close": df["Close"].astype(float).round(2),
+            "volume": df.get("Volume", 0).astype(int),
+        }, index=df.index)
+
+        # Sync to SQLite / Postgres
+        db = SessionLocal()
+        try:
+            for idx, row in clean_df.iterrows():
+                ts = idx.to_pydatetime()
+                existing = db.query(StockCandle1M).filter(
+                    StockCandle1M.symbol == symbol,
+                    StockCandle1M.timestamp == ts
+                ).first()
+                if not existing:
+                    db.add(StockCandle1M(
+                        symbol=symbol,
+                        timestamp=ts,
+                        open=row["open"],
+                        high=row["high"],
+                        low=row["low"],
+                        close=row["close"],
+                        volume=row["volume"],
+                    ))
+            db.commit()
+            logger.info(f"Successfully cached {len(clean_df)} bars for {symbol} in IST.")
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Error persisting stock candles for {symbol}: {e}")
+        finally:
+            db.close()
+
+        return clean_df
+    except Exception as e:
+        logger.error(f"Error downloading {symbol} from yfinance: {e}")
+        return pd.DataFrame()
+
+
+def get_symbol_candles_df(
+    symbol: str = "^NSEI",
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Universal candle retriever for both Indian NIFTY and US stocks (SPY, QQQ, TSLA, etc.).
+    Returns a unified Pandas DataFrame with IST timestamps.
+    """
+    sym = symbol.upper().strip()
+    if sym in ["^NSEI", "NIFTY", "NIFTY50", "NIFTY 50"]:
+        return get_candles_df(start_time, end_time)
+
+    # US Stocks
+    db: Session = SessionLocal()
+    try:
+        q = db.query(StockCandle1M).filter(StockCandle1M.symbol == sym)
+        if start_time:
+            q = q.filter(StockCandle1M.timestamp >= start_time)
+        if end_time:
+            q = q.filter(StockCandle1M.timestamp <= end_time)
+
+        rows = q.order_by(StockCandle1M.timestamp.asc()).all()
+
+        # If empty or stale, download fresh from yfinance
+        if not rows or len(rows) < 50:
+            fetch_stock_candles_yfinance(sym, period="7d")
+            rows = q.order_by(StockCandle1M.timestamp.asc()).all()
+
+        if not rows:
+            return pd.DataFrame()
+
+        data = [
+            {
+                "timestamp": r.timestamp,
+                "open": r.open,
+                "high": r.high,
+                "low": r.low,
+                "close": r.close,
+                "volume": r.volume,
+            }
+            for r in rows
+        ]
+        df = pd.DataFrame(data)
+        df.set_index("timestamp", inplace=True)
+        return df
+    finally:
+        db.close()
+

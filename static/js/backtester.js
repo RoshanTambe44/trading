@@ -10,23 +10,98 @@ let backtestState = {
   ema21Series: null,
   isDarkTheme: true,
   tradeChartCache: {},
+  // Market & Asset
+  activeSymbol: "^NSEI",
+  activeCurrency: "₹",
   // Bot state
   isPaperMode: true,
   botPollingInterval: null,
 };
 
-// Format currency in INR
-function formatINR(val) {
-  if (val === undefined || val === null || isNaN(val)) return "₹0.00";
-  const sign = val > 0 ? "+" : "";
-  return (
-    sign +
-    new Intl.NumberFormat("en-IN", {
-      style: "currency",
-      currency: "INR",
-      maximumFractionDigits: 2,
-    }).format(val)
-  );
+// Universal currency formatter (supports INR and USD)
+function formatCurrency(val, currencyOverride = null) {
+  if (val === undefined || val === null || isNaN(val)) {
+    const cur = currencyOverride || backtestState.activeCurrency || "₹";
+    return `${cur}0.00`;
+  }
+  const cur = currencyOverride || backtestState.activeCurrency || "₹";
+  const sign = val > 0 ? "+" : val < 0 ? "-" : "";
+  const absVal = Math.abs(val);
+
+  if (cur === "$") {
+    return `${sign}$${absVal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  } else {
+    return `${sign}₹${absVal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+}
+
+// Backwards-compatible alias
+const formatINR = formatCurrency;
+
+// Handles market & symbol change (NIFTY vs US Stocks)
+function onSymbolChange() {
+  const symEl = document.getElementById("filter-symbol");
+  if (!symEl) return;
+  const symbol = symEl.value;
+  backtestState.activeSymbol = symbol;
+
+  const isUS = (symbol !== "^NSEI");
+  backtestState.activeCurrency = isUS ? "$" : "₹";
+
+  const modeEl = document.getElementById("filter-mode");
+  const startEl = document.getElementById("filter-start-time");
+  const cutoffEl = document.getElementById("filter-cutoff-time");
+
+  if (isUS) {
+    // US Night Market Hours (IST)
+    startEl.innerHTML = `
+      <option value="20:00" selected>20:00 IST (09:30 EST Open)</option>
+      <option value="20:30">20:30 IST</option>
+      <option value="21:00">21:00 IST</option>
+    `;
+    cutoffEl.innerHTML = `
+      <option value="23:30">23:30 IST</option>
+      <option value="00:30">00:30 IST</option>
+      <option value="01:30">01:30 IST</option>
+      <option value="02:00" selected>02:00 IST (15:30 EST Cutoff)</option>
+    `;
+    modeEl.innerHTML = `
+      <option value="SHARES_10" selected>Direct Shares (10 Shares)</option>
+      <option value="SHARES_50">Direct Shares (50 Shares)</option>
+      <option value="SHARES_100">Direct Shares (100 Shares)</option>
+      <option value="ATM_BUY">ATM Call/Put Options</option>
+    `;
+    const spotLabel = document.getElementById("live-spot-label");
+    if (spotLabel) spotLabel.textContent = `${symbol} Spot (Live)`;
+    showToast(`Switched to US Market: ${symbol} (Night Trading: 20:00 to 02:30 IST)`, "info");
+  } else {
+    // Indian Market Hours (IST)
+    startEl.innerHTML = `
+      <option value="09:30" selected>09:30 IST</option>
+      <option value="10:00">10:00 IST</option>
+      <option value="10:30">10:30 IST</option>
+    `;
+    cutoffEl.innerHTML = `
+      <option value="11:30">11:30 IST</option>
+      <option value="12:00">12:00 IST</option>
+      <option value="12:30">12:30 IST</option>
+      <option value="13:00">13:00 IST</option>
+      <option value="13:30">13:30 IST</option>
+      <option value="14:00">14:00 IST</option>
+      <option value="14:30" selected>14:30 IST</option>
+    `;
+    modeEl.innerHTML = `
+      <option value="ATM_BUY" selected>ATM Buy (Nearest 50 Strike)</option>
+      <option value="DEEP_ITM_BUY">Deep ITM Buy (ITM 5 strikes / ±250 pts)</option>
+      <option value="ATM_SELL">ATM Sell (Short Options)</option>
+    `;
+    const spotLabel = document.getElementById("live-spot-label");
+    if (spotLabel) spotLabel.textContent = "NIFTY Spot (Live)";
+    showToast("Switched to Indian Market: NIFTY 50", "info");
+  }
+
+  // Trigger fresh backtest for the selected market/symbol
+  triggerBacktest(true);
 }
 
 function showToast(message, type = "info") {
@@ -152,18 +227,23 @@ async function triggerBacktest(forceNotification = false) {
   if (btn) btn.disabled = true;
   if (icon) icon.classList.add("animate-spin");
 
+  const symEl = document.getElementById("filter-symbol");
+  const symbol = symEl ? symEl.value : "^NSEI";
+  backtestState.activeSymbol = symbol;
+
   const timeframe = document.getElementById("filter-timeframe").value;
   const mode = document.getElementById("filter-mode").value;
   const startTime = document.getElementById("filter-start-time").value;
   const cutoffTime = document.getElementById("filter-cutoff-time").value;
 
-  document.getElementById("chart-timeframe-tag").textContent = `Timeframe: ${timeframe}`;
+  document.getElementById("chart-timeframe-tag").textContent = `${symbol} • ${timeframe}`;
 
   try {
     const res = await fetch("/api/backtest/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        symbol: symbol,
         timeframe: timeframe,
         mode: mode,
         start_time: startTime,
@@ -177,13 +257,14 @@ async function triggerBacktest(forceNotification = false) {
       return;
     }
 
+    if (data.currency) backtestState.activeCurrency = data.currency;
     backtestState.runId = data.run_id;
     backtestState.allTrades = data.trades || [];
     renderKPIs(data.summary);
     applyClientFilters();
 
     if (forceNotification) {
-      showToast(`Backtest completed! ${data.trades.length} trades evaluated.`, "success");
+      showToast(`Backtest completed for ${symbol}! ${data.trades.length} trades evaluated.`, "success");
     }
   } catch (err) {
     console.error("Backtest execution error:", err);
@@ -319,7 +400,12 @@ async function selectTrade(index) {
       : "bg-red-500/10 text-red-400 border border-red-500/30"
   }`;
 
-  document.getElementById("meta-symbol").textContent = `NIFTY ${trade.strike} ${trade.option_type}`;
+  const cur = backtestState.activeCurrency || "₹";
+  const sym = backtestState.activeSymbol || "^NSEI";
+
+  document.getElementById("meta-symbol").textContent = trade.option_type === "SHARES"
+    ? `${sym} (${trade.shares || 10} Shares)`
+    : `NIFTY ${trade.strike} ${trade.option_type}`;
 
   const whipsawBadge = document.getElementById("meta-whipsaw-badge");
   if (trade.is_whipsaw) {
@@ -330,13 +416,13 @@ async function selectTrade(index) {
 
   document.getElementById("meta-nifty-in").textContent = trade.nifty_entry || "--";
   document.getElementById("meta-nifty-out").textContent = trade.nifty_exit || "--";
-  document.getElementById("meta-opt-in").textContent = `₹${trade.entry_premium}`;
-  document.getElementById("meta-opt-out").textContent = `₹${trade.exit_premium}`;
-  document.getElementById("meta-dte").textContent = `${trade.dte || 0}d`;
+  document.getElementById("meta-opt-in").textContent = `${cur}${trade.entry_premium}`;
+  document.getElementById("meta-opt-out").textContent = `${cur}${trade.exit_premium}`;
+  document.getElementById("meta-dte").textContent = trade.option_type === "SHARES" ? "Equity" : `${trade.dte || 0}d`;
   document.getElementById("meta-exit-reason").textContent = trade.exit_reason;
 
   const netPnlBadge = document.getElementById("meta-net-pnl");
-  netPnlBadge.textContent = formatINR(trade.net_pnl);
+  netPnlBadge.textContent = formatCurrency(trade.net_pnl);
   netPnlBadge.className = `px-3 py-1 rounded-lg text-xs font-mono font-bold ${
     trade.net_pnl >= 0
       ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
@@ -344,17 +430,17 @@ async function selectTrade(index) {
   }`;
 
   // 3. Update Cost Card
-  document.getElementById("cost-gross").textContent = formatINR(trade.gross_pnl);
-  document.getElementById("cost-slippage").textContent = `₹${trade.slippage || 0}`;
-  document.getElementById("cost-brokerage").textContent = `₹${trade.brokerage || 40}`;
-  document.getElementById("cost-stt").textContent = `₹${trade.stt || 0}`;
-  document.getElementById("cost-exchange").textContent = `₹${trade.exchange_charges || 0}`;
-  document.getElementById("cost-sebi").textContent = `₹${trade.sebi_charges || 0}`;
-  document.getElementById("cost-stamp").textContent = `₹${trade.stamp_duty || 0}`;
-  document.getElementById("cost-gst").textContent = `₹${trade.gst || 0}`;
+  document.getElementById("cost-gross").textContent = formatCurrency(trade.gross_pnl);
+  document.getElementById("cost-slippage").textContent = `${cur}${trade.slippage || 0}`;
+  document.getElementById("cost-brokerage").textContent = `${cur}${trade.brokerage || (cur === "$" ? 0 : 40)}`;
+  document.getElementById("cost-stt").textContent = `${cur}${trade.stt || 0}`;
+  document.getElementById("cost-exchange").textContent = `${cur}${trade.exchange_charges || 0}`;
+  document.getElementById("cost-sebi").textContent = `${cur}${trade.sebi_charges || 0}`;
+  document.getElementById("cost-stamp").textContent = `${cur}${trade.stamp_duty || 0}`;
+  document.getElementById("cost-gst").textContent = `${cur}${trade.gst || 0}`;
 
   const costNetEl = document.getElementById("cost-net");
-  costNetEl.textContent = formatINR(trade.net_pnl);
+  costNetEl.textContent = formatCurrency(trade.net_pnl);
   costNetEl.className = `font-mono font-black text-xs mt-0.5 block ${trade.net_pnl >= 0 ? "text-emerald-300" : "text-red-300"}`;
 
   // 4. Load & Render Candlestick Chart
@@ -367,12 +453,13 @@ async function loadTradeChart(tradeId) {
   if (loading) loading.classList.remove("hidden");
 
   const timeframe = document.getElementById("filter-timeframe").value;
-  const cacheKey = `${tradeId}_${timeframe}`;
+  const symbol = backtestState.activeSymbol || "^NSEI";
+  const cacheKey = `${symbol}_${tradeId}_${timeframe}`;
 
   try {
     let chartData = backtestState.tradeChartCache[cacheKey];
     if (!chartData) {
-      const res = await fetch(`/api/backtest/trade-chart/${tradeId}?timeframe=${timeframe}`);
+      const res = await fetch(`/api/backtest/trade-chart/${tradeId}?timeframe=${timeframe}&symbol=${encodeURIComponent(symbol)}`);
       chartData = await res.json();
       if (chartData.success) {
         backtestState.tradeChartCache[cacheKey] = chartData;
@@ -479,16 +566,22 @@ function setTradingMode(isPaper) {
 }
 
 async function startLiveBot() {
+  const symEl = document.getElementById("filter-symbol");
+  const symbol = symEl ? symEl.value : "^NSEI";
   const timeframe = document.getElementById("filter-timeframe").value;
   const mode = document.getElementById("filter-mode").value;
   const startTime = document.getElementById("filter-start-time").value;
   const cutoffTime = document.getElementById("filter-cutoff-time").value;
+
+  const panel = document.getElementById("bot-log-panel");
+  if (panel) panel.classList.remove("hidden");
 
   try {
     const res = await fetch("/api/bot/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        symbol: symbol,
         timeframe: timeframe,
         mode: mode,
         start_time: startTime,
@@ -498,7 +591,7 @@ async function startLiveBot() {
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Strategy Bot Started (${backtestState.isPaperMode ? "Paper" : "Live"})`, "success");
+      showToast(`Strategy Bot Started on ${symbol} (${backtestState.isPaperMode ? "Paper" : "Live"})`, "success");
       updateBotUIState(true);
       pollBotStatus();
     } else {
@@ -556,8 +649,17 @@ async function pollBotStatus() {
 
     updateBotUIState(data.is_running, data.status);
 
+    if (data.currency) backtestState.activeCurrency = data.currency;
+    if (data.symbol) backtestState.activeSymbol = data.symbol;
+
+    const spotLabel = document.getElementById("live-spot-label");
+    if (spotLabel) {
+      const isUS = (data.symbol && data.symbol !== "^NSEI");
+      spotLabel.textContent = isUS ? `${data.symbol} Spot (Live)` : "NIFTY Spot (Live)";
+    }
+
     if (data.latest_spot) {
-      document.getElementById("live-spot").textContent = formatINR(data.latest_spot);
+      document.getElementById("live-spot").textContent = formatCurrency(data.latest_spot, data.currency);
       document.getElementById("live-ema9").textContent = data.latest_ema9 ? data.latest_ema9.toFixed(1) : "--";
       document.getElementById("live-ema21").textContent = data.latest_ema21 ? data.latest_ema21.toFixed(1) : "--";
     }
@@ -575,7 +677,7 @@ async function pollBotStatus() {
       posDesc.textContent = `${data.current_position.action} ${data.current_position.trading_symbol}`;
       posDesc.className = "text-xs font-bold text-brand-400 mt-0.5 truncate";
 
-      pnlEl.textContent = formatINR(data.unrealized_pnl);
+      pnlEl.textContent = formatCurrency(data.unrealized_pnl, data.currency);
       pnlEl.className = `text-sm font-bold font-mono mt-0.5 ${data.unrealized_pnl >= 0 ? "text-emerald-400" : "text-red-400"}`;
 
       if (squareOffBtn) squareOffBtn.classList.remove("hidden");
@@ -583,10 +685,19 @@ async function pollBotStatus() {
       posDesc.textContent = "No open position";
       posDesc.className = "text-xs font-bold text-gray-500 mt-0.5";
 
-      pnlEl.textContent = "₹0.00";
+      pnlEl.textContent = formatCurrency(0, data.currency);
       pnlEl.className = "text-sm font-bold font-mono text-gray-500 mt-0.5";
 
       if (squareOffBtn) squareOffBtn.classList.add("hidden");
+    }
+
+    // Render Realized P&L
+    const realizedEl = document.getElementById("live-realized-pnl");
+    if (realizedEl && data.total_realized_pnl !== undefined) {
+      const relVal = data.total_realized_pnl;
+      const count = (data.completed_trades || []).length;
+      const color = relVal > 0 ? "text-emerald-400" : relVal < 0 ? "text-red-400" : "text-gray-400";
+      realizedEl.innerHTML = `Realized: <span class="${color} font-bold">${formatCurrency(relVal, data.currency)}</span> (${count} trades)`;
     }
 
     // Render Event Logs
@@ -594,9 +705,22 @@ async function pollBotStatus() {
       const stream = document.getElementById("bot-log-stream");
       if (stream) {
         stream.innerHTML = data.logs
-          .map((l) => `<div class="text-[11px]"><span class="text-gray-500">[${l.timestamp}]</span> <span class="${l.level === "ERROR" ? "text-red-400 font-bold" : l.message.includes("Opened") ? "text-brand-400 font-bold" : "text-gray-300"}">${l.message}</span></div>`)
+          .map((l) => {
+            let color = "text-gray-300";
+            if (l.level === "ERROR") color = "text-red-400 font-bold";
+            else if (l.message.includes("Opened") || l.message.includes("CROSSOVER") || l.message.includes("SIGNAL")) color = "text-brand-400 font-bold";
+            else if (l.message.includes("Spot:")) color = "text-cyan-300";
+            else if (l.level === "WARNING") color = "text-amber-300";
+            return `<div class="text-[11px] leading-relaxed"><span class="text-gray-500 font-mono">[${l.timestamp}]</span> <span class="${color}">${l.message}</span></div>`;
+          })
           .join("");
       }
+    }
+
+    const logStatusTag = document.getElementById("bot-log-status-tag");
+    if (logStatusTag) {
+      logStatusTag.textContent = data.is_running ? `● Live Streaming (${data.timeframe})` : "Idle";
+      logStatusTag.className = data.is_running ? "text-emerald-400 font-semibold" : "text-gray-400";
     }
   } catch (err) {
     // Silent polling error

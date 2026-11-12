@@ -35,6 +35,23 @@ class NiftyCandle1M(Base):
     __table_args__ = (Index("idx_candle_time", "timestamp"),)
 
 
+class StockCandle1M(Base):
+    """1-minute candlestick data for multi-asset / US stocks (SPY, QQQ, TSLA, AAPL, NVDA, etc.)."""
+
+    __tablename__ = "stock_1m_candles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(BigInteger, default=0)
+
+    __table_args__ = (Index("idx_stock_sym_time", "symbol", "timestamp", unique=True),)
+
+
 class StrategyRun(Base):
     """Cached backtest run results and summary KPIs."""
 

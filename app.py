@@ -6,7 +6,7 @@ import pandas as pd
 from config import Config, load_credentials, BASE_DIR
 from groww_service import groww_service
 from database import SessionLocal, StrategyRun, SimulatedTrade, NiftyCandle1M
-from data_feed import get_candles_df, get_data_summary, seed_database_if_empty
+from data_feed import get_candles_df, get_symbol_candles_df, get_data_summary, seed_database_if_empty
 from strategy_backtester import run_backtest, save_backtest_run, resample_bars
 from live_trader import live_bot
 
@@ -176,20 +176,24 @@ def run_backtest_endpoint():
       }
     """
     data = request.get_json(silent=True) or {}
+    symbol = data.get("symbol", "^NSEI").upper().strip()
     timeframe = data.get("timeframe", "15m")
     mode = data.get("mode", "ATM_BUY")
     start_time = data.get("start_time", "09:30")
     cutoff_time = data.get("cutoff_time", "14:30")
 
-    cache_key = f"{timeframe}_{mode}_{start_time}_{cutoff_time}"
+    cache_key = f"{symbol}_{timeframe}_{mode}_{start_time}_{cutoff_time}"
     if cache_key in RUN_CACHE:
         return jsonify(RUN_CACHE[cache_key])
 
-    df_1m = get_candles_df()
-    if df_1m.empty:
+    df_1m = get_symbol_candles_df(symbol)
+    if df_1m.empty and symbol in ["^NSEI", "NIFTY"]:
         # Seed database if not done yet
         seed_database_if_empty()
         df_1m = get_candles_df()
+
+    if df_1m.empty:
+        return jsonify({"success": False, "error": f"No candlestick data available for symbol {symbol}"}), 400
 
     results = run_backtest(
         df_1m=df_1m,
@@ -197,11 +201,12 @@ def run_backtest_endpoint():
         mode=mode,
         start_time_str=start_time,
         cutoff_time_str=cutoff_time,
+        symbol=symbol,
     )
 
     # Save to database for persistence
     run_id = save_backtest_run(
-        {"timeframe": timeframe, "mode": mode, "start_time": start_time, "cutoff_time": cutoff_time},
+        {"timeframe": timeframe, "mode": mode, "start_time": start_time, "cutoff_time": cutoff_time, "symbol": symbol},
         results,
     )
 
@@ -223,6 +228,8 @@ def run_backtest_endpoint():
     payload = {
         "success": True,
         "run_id": run_id,
+        "symbol": symbol,
+        "currency": results.get("currency", "₹"),
         "timeframe": timeframe,
         "mode": mode,
         "start_time": start_time,
@@ -242,6 +249,9 @@ def get_trade_chart_data(trade_id):
     for the specific day/window of the selected trade.
     """
     timeframe = request.args.get("timeframe", "15m")
+    symbol = request.args.get("symbol", "^NSEI").upper().strip()
+    is_us = symbol not in ["^NSEI", "NIFTY", "NIFTY50", "NIFTY 50"]
+
     db = SessionLocal()
     try:
         trade = db.query(SimulatedTrade).filter(SimulatedTrade.id == trade_id).first()
@@ -250,15 +260,15 @@ def get_trade_chart_data(trade_id):
 
         # Fetch 1m candles for that entire trading day
         trade_date = trade.entry_time.date()
-        day_start = datetime.combine(trade_date, datetime.min.time())
-        day_end = datetime.combine(trade_date, datetime.max.time())
+        day_start = datetime.combine(trade_date - timedelta(days=1 if is_us else 0), datetime.min.time())
+        day_end = datetime.combine(trade_date + timedelta(days=1 if is_us else 0), datetime.max.time())
 
-        df_day = get_candles_df(day_start, day_end)
+        df_day = get_symbol_candles_df(symbol, day_start, day_end)
         if df_day.empty:
             return jsonify({"success": False, "error": "No candle data for this trade date"}), 404
 
         # Resample to strategy timeframe
-        res_df = resample_bars(df_day, timeframe)
+        res_df = resample_bars(df_day, timeframe, is_us=is_us)
         if res_df.empty:
             return jsonify({"success": False, "error": "Resampling failed"}), 400
 
@@ -359,6 +369,7 @@ def get_bot_status():
 def start_bot():
     """Starts the 9/21 EMA live/paper trading bot."""
     data = request.get_json(silent=True) or {}
+    symbol = data.get("symbol", "^NSEI").upper().strip()
     timeframe = data.get("timeframe", "15m")
     mode = data.get("mode", "ATM_BUY")
     start_time = data.get("start_time", "09:30")
@@ -366,6 +377,7 @@ def start_bot():
     is_paper = data.get("is_paper", True)
 
     res = live_bot.start(
+        symbol=symbol,
         timeframe=timeframe,
         mode=mode,
         start_time=start_time,
