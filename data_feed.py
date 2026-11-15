@@ -197,7 +197,9 @@ def seed_database_if_empty(min_candles: int = 4000) -> int:
 def get_candles_df(start_time: Optional[datetime] = None, end_time: Optional[datetime] = None) -> pd.DataFrame:
     """
     Queries 1-minute NIFTY candles from database and returns a Pandas DataFrame.
+    Automatically initializes tables and seeds candles if missing.
     """
+    init_db()
     db: Session = SessionLocal()
     try:
         query = db.query(NiftyCandle1M)
@@ -207,7 +209,29 @@ def get_candles_df(start_time: Optional[datetime] = None, end_time: Optional[dat
             query = query.filter(NiftyCandle1M.timestamp <= end_time)
 
         query = query.order_by(NiftyCandle1M.timestamp.asc())
-        rows = query.all()
+        try:
+            rows = query.all()
+        except Exception:
+            db.close()
+            seed_database_if_empty()
+            db = SessionLocal()
+            query = db.query(NiftyCandle1M)
+            if start_time:
+                query = query.filter(NiftyCandle1M.timestamp >= start_time)
+            if end_time:
+                query = query.filter(NiftyCandle1M.timestamp <= end_time)
+            rows = query.order_by(NiftyCandle1M.timestamp.asc()).all()
+
+        if not rows:
+            db.close()
+            seed_database_if_empty()
+            db = SessionLocal()
+            query = db.query(NiftyCandle1M)
+            if start_time:
+                query = query.filter(NiftyCandle1M.timestamp >= start_time)
+            if end_time:
+                query = query.filter(NiftyCandle1M.timestamp <= end_time)
+            rows = query.order_by(NiftyCandle1M.timestamp.asc()).all()
 
         if not rows:
             return pd.DataFrame()
@@ -232,9 +256,15 @@ def get_candles_df(start_time: Optional[datetime] = None, end_time: Optional[dat
 
 def get_data_summary() -> Dict[str, Any]:
     """Returns total candle count, date range, and trading days available."""
+    init_db()
     db: Session = SessionLocal()
     try:
-        count = db.query(NiftyCandle1M).count()
+        try:
+            count = db.query(NiftyCandle1M).count()
+        except Exception:
+            seed_database_if_empty()
+            count = db.query(NiftyCandle1M).count()
+
         if count == 0:
             return {"count": 0, "first_date": None, "last_date": None}
 

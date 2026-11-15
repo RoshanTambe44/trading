@@ -13,6 +13,12 @@ from live_trader import live_bot
 app = Flask(__name__)
 app.config.from_object(Config)
 
+# Auto-seed database if empty on server start
+try:
+    seed_database_if_empty()
+except Exception as e:
+    print(f"[Startup] DB seeding note: {e}")
+
 # In-memory run cache for instant filter response
 RUN_CACHE = {}
 

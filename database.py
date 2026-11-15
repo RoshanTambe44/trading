@@ -150,3 +150,10 @@ def init_db():
     """Initializes tables in database."""
     Base.metadata.create_all(bind=engine)
     print(f"[Database] Initialized tables successfully with engine: {engine.url}")
+
+
+# Auto-create all required tables immediately on load
+try:
+    init_db()
+except Exception as e:
+    print(f"[Database] Warning on auto init_db: {e}")
