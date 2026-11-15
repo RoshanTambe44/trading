@@ -296,6 +296,46 @@
           </button>
         </div>
       </div>
+
+      <!-- Quantitative Profitability & Risk Filters -->
+      <div class="mt-3.5 pt-3 border-t border-dark-border flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div class="flex items-center gap-2 text-gray-400">
+          <i data-lucide="shield-check" class="w-4 h-4 text-brand-500"></i>
+          <span class="font-bold text-gray-300 text-[11px] uppercase tracking-wider">Quant Edge & Regime Filters:</span>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-4">
+          <!-- VWAP Filter Toggle -->
+          <label class="flex items-center gap-2 cursor-pointer select-none text-xs text-gray-300 hover:text-white transition" title="Only buy when Spot > VWAP; only sell when Spot < VWAP">
+            <input type="checkbox" id="filter-vwap" onchange="triggerBacktest()" class="w-4 h-4 rounded border-gray-700 bg-dark-base text-brand-500 focus:ring-brand-500/30 accent-emerald-500">
+            <span>Intraday VWAP Alignment</span>
+          </label>
+
+          <!-- 1H 50 EMA Macro Trend Filter Toggle -->
+          <label class="flex items-center gap-2 cursor-pointer select-none text-xs text-gray-300 hover:text-white transition" title="Only take Longs when 1-Hour candle > 50 EMA, Shorts when 1-Hour candle < 50 EMA">
+            <input type="checkbox" id="filter-htf-trend" onchange="triggerBacktest()" class="w-4 h-4 rounded border-gray-700 bg-dark-base text-brand-500 focus:ring-brand-500/30 accent-emerald-500">
+            <span>1-Hour 50 EMA Trend Filter</span>
+          </label>
+
+          <!-- ADX Chop Filter Toggle -->
+          <label class="flex items-center gap-2 cursor-pointer select-none text-xs text-gray-300 hover:text-white transition" title="Halt trades during sideways churn when ADX < 20">
+            <input type="checkbox" id="filter-adx" onchange="triggerBacktest()" class="w-4 h-4 rounded border-gray-700 bg-dark-base text-brand-500 focus:ring-brand-500/30 accent-emerald-500">
+            <span>ADX(14) Chop Filter (&ge; 20)</span>
+          </label>
+
+          <!-- ATR Trailing Stop Toggle & Multiplier -->
+          <div class="flex items-center gap-2">
+            <label class="flex items-center gap-2 cursor-pointer select-none text-xs text-gray-300 hover:text-white transition" title="Chandelier trailing stop based on Average True Range to lock profits">
+              <input type="checkbox" id="filter-trailing-sl" onchange="triggerBacktest()" class="w-4 h-4 rounded border-gray-700 bg-dark-base text-brand-500 focus:ring-brand-500/30 accent-emerald-500">
+              <span>ATR Trailing Stop</span>
+            </label>
+            <div class="flex items-center gap-1 text-[11px] text-gray-400">
+              <input type="number" id="filter-atr-mult" value="1.8" step="0.1" min="0.5" max="5.0" onchange="triggerBacktest()" class="w-14 px-1.5 py-0.5 rounded bg-dark-base border border-dark-border text-white text-center font-mono text-xs focus:outline-none focus:border-brand-500" title="ATR Multiplier (e.g. 1.8x)">
+              <span>x ATR</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 2. KPI Metrics Row -->

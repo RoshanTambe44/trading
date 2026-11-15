@@ -183,7 +183,7 @@ def calculate_trade_costs(
     }
 
 
-# --- Resampling & Indicators ---
+# --- Quantitative Indicators & Resampling ---
 
 def is_time_in_window(t: dtime, start: dtime, cutoff: dtime) -> bool:
     """Checks whether time t is inside the entry window, handling overnight sessions."""
@@ -194,10 +194,68 @@ def is_time_in_window(t: dtime, start: dtime, cutoff: dtime) -> bool:
         return t >= start or t <= cutoff
 
 
+def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Computes Average True Range (ATR) with exponential smoothing."""
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.ewm(alpha=1.0 / period, adjust=False).mean()
+
+
+def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Computes Wilder's Average Directional Index (ADX) to detect market chop/trend."""
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / period, adjust=False).mean().replace(0, 1e-5)
+
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+
+    pos_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    neg_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    pos_di = 100.0 * pd.Series(pos_dm, index=df.index).ewm(alpha=1.0 / period, adjust=False).mean() / atr
+    neg_di = 100.0 * pd.Series(neg_dm, index=df.index).ewm(alpha=1.0 / period, adjust=False).mean() / atr
+
+    dx = 100.0 * ((pos_di - neg_di).abs() / (pos_di + neg_di).replace(0, 1e-5))
+    adx = dx.ewm(alpha=1.0 / period, adjust=False).mean()
+    return adx
+
+
+def compute_session_vwap(df: pd.DataFrame) -> pd.Series:
+    """Computes cumulative session-anchored Volume-Weighted Average Price (VWAP)."""
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3.0
+    vol = df["volume"].replace(0, 1)
+    cum_vol = vol.cumsum()
+    cum_pv = (typical_price * vol).cumsum()
+    return cum_pv / cum_vol
+
+
+def compute_htf_ema(df_1m: pd.DataFrame, span: int = 50) -> pd.Series:
+    """Computes Higher Timeframe (1-Hour) 50 EMA trend line reindexed to 1m bars."""
+    df_1h = df_1m.resample("60min").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last"
+    }).dropna()
+    if df_1h.empty:
+        return pd.Series(index=df_1m.index, dtype=float)
+    ema_50 = df_1h["close"].ewm(span=span, adjust=False).mean()
+    return ema_50.reindex(df_1m.index, method="ffill")
+
+
 def resample_bars(df_1m: pd.DataFrame, timeframe: str, is_us: bool = False) -> pd.DataFrame:
     """
-    Resamples 1m spot bars to 5m, 15m, or 30m.
-    If is_us=True: groups across midnight so US evening sessions (20:00 to 02:30 IST) remain together.
+    Resamples 1m spot bars to 5m, 15m, or 30m with session-anchored VWAP,
+    continuous lookback EMA warm-up, ATR, and ADX indicators.
     """
     if df_1m.empty:
         return pd.DataFrame()
@@ -221,16 +279,25 @@ def resample_bars(df_1m: pd.DataFrame, timeframe: str, is_us: bool = False) -> p
             "close": "last",
             "volume": "sum",
         }).dropna()
-        resampled_days.append(daily_res)
+        if not daily_res.empty:
+            # Session-anchored VWAP
+            daily_res["vwap"] = compute_session_vwap(daily_res)
+            resampled_days.append(daily_res)
 
     if not resampled_days:
         return pd.DataFrame()
 
     res = pd.concat(resampled_days)
 
-    # Calculate EMAs on closed bars
+    # Continuous indicators across the full historical dataset (warm-up lookback)
     res["ema_9"] = res["close"].ewm(span=9, adjust=False).mean()
     res["ema_21"] = res["close"].ewm(span=21, adjust=False).mean()
+    res["atr_14"] = compute_atr(res, 14)
+    res["adx_14"] = compute_adx(res, 14)
+
+    # Higher timeframe 1-hour 50 EMA trend filter
+    htf_series = compute_htf_ema(df_1m, span=50)
+    res["htf_50_ema"] = htf_series.reindex(res.index, method="ffill")
 
     return res
 
@@ -244,10 +311,19 @@ def run_backtest(
     start_time_str: str = "09:30",
     cutoff_time_str: str = "14:30",
     symbol: str = "^NSEI",
+    filter_vwap: bool = False,
+    filter_htf_trend: bool = False,
+    filter_adx: bool = False,
+    trailing_sl: bool = False,
+    atr_mult: float = 1.8,
 ) -> Dict[str, Any]:
     """
     Executes the 9/21 EMA crossover strategy backtest across the provided 1m dataset.
-    Supports both Indian NIFTY Options and US Stocks / ETFs (SPY, QQQ, TSLA, NVDA, AAPL).
+    Supports quantitative filters:
+      - filter_vwap: Intraday VWAP alignment (Long > VWAP, Short < VWAP)
+      - filter_htf_trend: 1-Hour 50 EMA macro trend confirmation
+      - filter_adx: ADX(14) >= 20 chop filter
+      - trailing_sl: Chandelier ATR trailing stop (atr_mult * ATR14)
     """
     if df_1m.empty:
         return {"summary": {}, "trades": []}
@@ -308,10 +384,62 @@ def run_backtest(
                 _close_trade(active_trade, exit_time, exit_spot, "MANDATORY_CLOSE", trades, mode, is_us)
                 active_trade = None
 
+            # Trailing Stop Check (if active trade and trailing_sl enabled)
+            if active_trade and trailing_sl:
+                direction = active_trade["direction"]
+                atr_val = float(curr_bar.get("atr_14", 25.0) or 25.0)
+                if direction == "LONG":
+                    if curr_bar["high"] > active_trade["highest_high"]:
+                        active_trade["highest_high"] = float(curr_bar["high"])
+                        new_sl = active_trade["highest_high"] - (atr_mult * atr_val)
+                        active_trade["trailing_sl"] = max(active_trade["trailing_sl"], new_sl)
+
+                    if curr_bar["low"] <= active_trade["trailing_sl"]:
+                        exit_spot = active_trade["trailing_sl"]
+                        _close_trade(active_trade, curr_bar.name, exit_spot, "ATR_TRAILING_SL", trades, mode, is_us)
+                        active_trade = None
+                else:  # SHORT
+                    if curr_bar["low"] < active_trade["lowest_low"]:
+                        active_trade["lowest_low"] = float(curr_bar["low"])
+                        new_sl = active_trade["lowest_low"] + (atr_mult * atr_val)
+                        active_trade["trailing_sl"] = min(active_trade["trailing_sl"], new_sl)
+
+                    if curr_bar["high"] >= active_trade["trailing_sl"]:
+                        exit_spot = active_trade["trailing_sl"]
+                        _close_trade(active_trade, curr_bar.name, exit_spot, "ATR_TRAILING_SL", trades, mode, is_us)
+                        active_trade = None
+
             # Handle Crossover Signals
             if bullish_cross or bearish_cross:
                 day_cross_count += 1
                 new_direction = "LONG" if bullish_cross else "SHORT"
+
+                # Filter 1: Intraday VWAP Alignment
+                vwap_val = float(curr_bar.get("vwap", 0.0) or 0.0)
+                passes_vwap = True
+                if filter_vwap and vwap_val > 0:
+                    if new_direction == "LONG" and curr_bar["close"] < vwap_val:
+                        passes_vwap = False
+                    elif new_direction == "SHORT" and curr_bar["close"] > vwap_val:
+                        passes_vwap = False
+
+                # Filter 2: HTF 1-Hour 50 EMA Macro Trend
+                htf_ema = curr_bar.get("htf_50_ema")
+                passes_htf = True
+                if filter_htf_trend and pd.notna(htf_ema) and float(htf_ema) > 0:
+                    if new_direction == "LONG" and curr_bar["close"] < float(htf_ema):
+                        passes_htf = False
+                    elif new_direction == "SHORT" and curr_bar["close"] > float(htf_ema):
+                        passes_htf = False
+
+                # Filter 3: ADX Chop Filter (ADX >= 20)
+                adx_val = curr_bar.get("adx_14")
+                passes_adx = True
+                if filter_adx and pd.notna(adx_val):
+                    if float(adx_val) < 20.0:
+                        passes_adx = False
+
+                signal_valid = (passes_vwap and passes_htf and passes_adx)
 
                 # 1. If currently in a trade: check for opposite crossover exit
                 if active_trade:
@@ -321,20 +449,24 @@ def run_backtest(
                         _close_trade(active_trade, exit_time, exit_spot, "OPPOSITE_CROSSOVER", trades, mode, is_us)
                         active_trade = None
 
-                        # Immediate Reversal: open reverse trade if still inside entry window
-                        if is_time_in_window(bar_time, t_start, t_cutoff):
+                        # Immediate Reversal: open reverse trade if still inside entry window and passed filters
+                        if signal_valid and is_time_in_window(bar_time, t_start, t_cutoff):
                             trade_counter += 1
+                            atr_val = float(curr_bar.get("atr_14", 25.0) or 25.0)
                             active_trade = _create_trade(
                                 trade_counter, day_cross_count, new_direction,
-                                curr_bar.name, curr_bar["close"], mode, trade_date, sym, is_us
+                                curr_bar.name, curr_bar["close"], mode, trade_date, sym, is_us,
+                                atr_val=atr_val, atr_mult=atr_mult
                             )
                 else:
-                    # Not in trade: check if within entry window
-                    if is_time_in_window(bar_time, t_start, t_cutoff):
+                    # Not in trade: check if within entry window & passed filters
+                    if signal_valid and is_time_in_window(bar_time, t_start, t_cutoff):
                         trade_counter += 1
+                        atr_val = float(curr_bar.get("atr_14", 25.0) or 25.0)
                         active_trade = _create_trade(
                             trade_counter, day_cross_count, new_direction,
-                            curr_bar.name, curr_bar["close"], mode, trade_date, sym, is_us
+                            curr_bar.name, curr_bar["close"], mode, trade_date, sym, is_us,
+                            atr_val=atr_val, atr_mult=atr_mult
                         )
 
         # End of day check: if a trade is somehow still open, force close it at last bar
@@ -351,6 +483,12 @@ def run_backtest(
         "trades": trades,
         "symbol": sym,
         "currency": "$" if is_us else "₹",
+        "filters_applied": {
+            "vwap": filter_vwap,
+            "htf_trend": filter_htf_trend,
+            "adx": filter_adx,
+            "trailing_sl": trailing_sl,
+        }
     }
 
 
@@ -364,8 +502,12 @@ def _create_trade(
     trade_date: Any,
     symbol: str = "^NSEI",
     is_us: bool = False,
+    atr_val: float = 25.0,
+    atr_mult: float = 1.8,
 ) -> Dict[str, Any]:
-    """Initializes a new trade record with option or share parameters."""
+    """Initializes a new trade record with option or share parameters and trailing SL."""
+    initial_sl = entry_spot - (atr_mult * atr_val) if direction == "LONG" else entry_spot + (atr_mult * atr_val)
+
     if is_us:
         # Standard US direct share trade
         shares = 10
@@ -390,6 +532,9 @@ def _create_trade(
             "entry_bar_time": entry_time,
             "shares": shares,
             "currency": "$",
+            "highest_high": float(entry_spot),
+            "lowest_low": float(entry_spot),
+            "trailing_sl": round(float(initial_sl), 2),
         }
 
     strike, opt_type = get_strike_for_mode(entry_spot, mode, direction)
@@ -417,6 +562,9 @@ def _create_trade(
         "entry_premium": entry_prem,
         "entry_bar_time": entry_time,
         "currency": "₹",
+        "highest_high": float(entry_spot),
+        "lowest_low": float(entry_spot),
+        "trailing_sl": round(float(initial_sl), 2),
     }
 
 

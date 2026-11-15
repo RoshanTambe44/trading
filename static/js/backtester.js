@@ -236,6 +236,13 @@ async function triggerBacktest(forceNotification = false) {
   const startTime = document.getElementById("filter-start-time").value;
   const cutoffTime = document.getElementById("filter-cutoff-time").value;
 
+  // Quantitative edge & regime filters
+  const filterVwap = document.getElementById("filter-vwap") ? document.getElementById("filter-vwap").checked : false;
+  const filterHtfTrend = document.getElementById("filter-htf-trend") ? document.getElementById("filter-htf-trend").checked : false;
+  const filterAdx = document.getElementById("filter-adx") ? document.getElementById("filter-adx").checked : false;
+  const trailingSl = document.getElementById("filter-trailing-sl") ? document.getElementById("filter-trailing-sl").checked : false;
+  const atrMult = document.getElementById("filter-atr-mult") ? parseFloat(document.getElementById("filter-atr-mult").value || 1.8) : 1.8;
+
   document.getElementById("chart-timeframe-tag").textContent = `${symbol} • ${timeframe}`;
 
   try {
@@ -248,6 +255,11 @@ async function triggerBacktest(forceNotification = false) {
         mode: mode,
         start_time: startTime,
         cutoff_time: cutoffTime,
+        filter_vwap: filterVwap,
+        filter_htf_trend: filterHtfTrend,
+        filter_adx: filterAdx,
+        trailing_sl: trailingSl,
+        atr_mult: atrMult,
       }),
     });
 
@@ -573,6 +585,13 @@ async function startLiveBot() {
   const startTime = document.getElementById("filter-start-time").value;
   const cutoffTime = document.getElementById("filter-cutoff-time").value;
 
+  // Quantitative edge & regime filters
+  const filterVwap = document.getElementById("filter-vwap") ? document.getElementById("filter-vwap").checked : false;
+  const filterHtfTrend = document.getElementById("filter-htf-trend") ? document.getElementById("filter-htf-trend").checked : false;
+  const filterAdx = document.getElementById("filter-adx") ? document.getElementById("filter-adx").checked : false;
+  const trailingSl = document.getElementById("filter-trailing-sl") ? document.getElementById("filter-trailing-sl").checked : false;
+  const atrMult = document.getElementById("filter-atr-mult") ? parseFloat(document.getElementById("filter-atr-mult").value || 1.8) : 1.8;
+
   const panel = document.getElementById("bot-log-panel");
   if (panel) panel.classList.remove("hidden");
 
@@ -587,6 +606,11 @@ async function startLiveBot() {
         start_time: startTime,
         cutoff_time: cutoffTime,
         is_paper: backtestState.isPaperMode,
+        filter_vwap: filterVwap,
+        filter_htf_trend: filterHtfTrend,
+        filter_adx: filterAdx,
+        trailing_sl: trailingSl,
+        atr_mult: atrMult,
       }),
     });
     const data = await res.json();
@@ -719,7 +743,13 @@ async function pollBotStatus() {
 
     const logStatusTag = document.getElementById("bot-log-status-tag");
     if (logStatusTag) {
-      logStatusTag.textContent = data.is_running ? `● Live Streaming (${data.timeframe})` : "Idle";
+      const activeFilters = [];
+      if (data.filter_vwap) activeFilters.push("VWAP");
+      if (data.filter_htf_trend) activeFilters.push("1H-50EMA");
+      if (data.filter_adx) activeFilters.push("ADX");
+      if (data.trailing_sl) activeFilters.push(`T-SL(${data.atr_mult}x)`);
+      const filterStr = activeFilters.length > 0 ? ` • Filters: ${activeFilters.join(", ")}` : "";
+      logStatusTag.textContent = data.is_running ? `● Live Streaming (${data.timeframe})${filterStr}` : "Idle";
       logStatusTag.className = data.is_running ? "text-emerald-400 font-semibold" : "text-gray-400";
     }
   } catch (err) {

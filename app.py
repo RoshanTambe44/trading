@@ -188,7 +188,14 @@ def run_backtest_endpoint():
     start_time = data.get("start_time", "09:30")
     cutoff_time = data.get("cutoff_time", "14:30")
 
-    cache_key = f"{symbol}_{timeframe}_{mode}_{start_time}_{cutoff_time}"
+    # Quantitative Filters & Risk Enhancements
+    filter_vwap = bool(data.get("filter_vwap", False))
+    filter_htf_trend = bool(data.get("filter_htf_trend", False))
+    filter_adx = bool(data.get("filter_adx", False))
+    trailing_sl = bool(data.get("trailing_sl", False))
+    atr_mult = float(data.get("atr_mult", 2.0))
+
+    cache_key = f"{symbol}_{timeframe}_{mode}_{start_time}_{cutoff_time}_{filter_vwap}_{filter_htf_trend}_{filter_adx}_{trailing_sl}_{atr_mult}"
     if cache_key in RUN_CACHE:
         return jsonify(RUN_CACHE[cache_key])
 
@@ -208,6 +215,11 @@ def run_backtest_endpoint():
         start_time_str=start_time,
         cutoff_time_str=cutoff_time,
         symbol=symbol,
+        filter_vwap=filter_vwap,
+        filter_htf_trend=filter_htf_trend,
+        filter_adx=filter_adx,
+        trailing_sl=trailing_sl,
+        atr_mult=atr_mult,
     )
 
     # Save to database for persistence
@@ -242,6 +254,7 @@ def run_backtest_endpoint():
         "cutoff_time": cutoff_time,
         "summary": results["summary"],
         "trades": serialized_trades,
+        "filters_applied": results.get("filters_applied", {}),
     }
 
     RUN_CACHE[cache_key] = payload
@@ -373,7 +386,7 @@ def get_bot_status():
 
 @app.route("/api/bot/start", methods=["POST"])
 def start_bot():
-    """Starts the 9/21 EMA live/paper trading bot."""
+    """Starts the 9/21 EMA live/paper trading bot with optional quantitative filters."""
     data = request.get_json(silent=True) or {}
     symbol = data.get("symbol", "^NSEI").upper().strip()
     timeframe = data.get("timeframe", "15m")
@@ -381,6 +394,11 @@ def start_bot():
     start_time = data.get("start_time", "09:30")
     cutoff_time = data.get("cutoff_time", "14:30")
     is_paper = data.get("is_paper", True)
+    filter_vwap = data.get("filter_vwap", False)
+    filter_htf_trend = data.get("filter_htf_trend", False)
+    filter_adx = data.get("filter_adx", False)
+    trailing_sl = data.get("trailing_sl", False)
+    atr_mult = float(data.get("atr_mult", 1.8))
 
     res = live_bot.start(
         symbol=symbol,
@@ -389,6 +407,11 @@ def start_bot():
         start_time=start_time,
         cutoff_time=cutoff_time,
         is_paper=is_paper,
+        filter_vwap=filter_vwap,
+        filter_htf_trend=filter_htf_trend,
+        filter_adx=filter_adx,
+        trailing_sl=trailing_sl,
+        atr_mult=atr_mult,
     )
     status_code = 200 if res.get("success") else 400
     return jsonify(res), status_code
