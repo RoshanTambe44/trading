@@ -43,6 +43,13 @@ class LiveEMABot:
         self.cutoff_time_str: str = "14:30"
         self.lot_size: int = LOT_SIZE
 
+        # Quantitative filters & risk controls
+        self.filter_vwap: bool = False
+        self.filter_htf_trend: bool = False
+        self.filter_adx: bool = False
+        self.trailing_sl: bool = False
+        self.atr_mult: float = 1.8
+
         # State tracking
         self.status: str = "IDLE"  # IDLE, RUNNING, IN_POSITION, SQUARED_OFF, ERROR
         self.current_position: Optional[Dict[str, Any]] = None
@@ -80,8 +87,14 @@ class LiveEMABot:
         start_time: str = "09:30",
         cutoff_time: str = "14:30",
         is_paper: bool = True,
+        filter_vwap: bool = False,
+        filter_htf_trend: bool = False,
+        filter_adx: bool = False,
+        trailing_sl: bool = False,
+        atr_mult: float = 1.8,
+        **kwargs,
     ) -> Dict[str, Any]:
-        """Starts the live trading bot background thread."""
+        """Starts the live trading bot background thread with optional quantitative filters."""
         if self.is_running:
             return {"success": False, "error": "Bot is already running."}
 
@@ -94,6 +107,11 @@ class LiveEMABot:
         self.start_time_str = start_time
         self.cutoff_time_str = cutoff_time
         self.is_paper = is_paper
+        self.filter_vwap = bool(filter_vwap)
+        self.filter_htf_trend = bool(filter_htf_trend)
+        self.filter_adx = bool(filter_adx)
+        self.trailing_sl = bool(trailing_sl)
+        self.atr_mult = float(atr_mult)
         self.status = "RUNNING"
         self.active_trade_count = 0
         self.last_logged_bar_time = None
@@ -117,6 +135,18 @@ class LiveEMABot:
         market_label = "US Market (NYSE/NASDAQ)" if self.is_us else "Indian Market (NSE)"
         self.log(f"Bot started: {mode_text} on {self.symbol} [{market_label}] ({timeframe}) | Mode: {mode}")
         self.log(f"Entry Window: {start_time} - {cutoff_time} IST | Lot: {self.lot_size} | Currency: {self.currency}")
+
+        active_filters = []
+        if self.filter_vwap:
+            active_filters.append("VWAP")
+        if self.filter_htf_trend:
+            active_filters.append("1H-50EMA")
+        if self.filter_adx:
+            active_filters.append("ADX(14)>=20")
+        if self.trailing_sl:
+            active_filters.append(f"Trailing SL ({self.atr_mult}x ATR)")
+        filters_desc = ", ".join(active_filters) if active_filters else "None"
+        self.log(f"Active Filters & Risk Controls: {filters_desc}")
 
         # Send Telegram notification on startup
         try:
@@ -257,6 +287,11 @@ class LiveEMABot:
             "mode": self.mode,
             "start_time": self.start_time_str,
             "cutoff_time": self.cutoff_time_str,
+            "filter_vwap": self.filter_vwap,
+            "filter_htf_trend": self.filter_htf_trend,
+            "filter_adx": self.filter_adx,
+            "trailing_sl": self.trailing_sl,
+            "atr_mult": self.atr_mult,
             "latest_spot": self.latest_spot,
             "latest_ema9": round(self.latest_ema9, 2),
             "latest_ema21": round(self.latest_ema21, 2),
@@ -407,9 +442,18 @@ class LiveEMABot:
             self.log(f"Waiting for at least 2 closed {self.timeframe} bars (currently {len(res_df)})...")
             return
 
-        # Calculate EMAs
+        # Calculate EMAs and indicators
         res_df["ema_9"] = res_df["close"].ewm(span=9, adjust=False).mean()
         res_df["ema_21"] = res_df["close"].ewm(span=21, adjust=False).mean()
+        res_df["vwap"] = compute_session_vwap(res_df)
+        res_df["atr_14"] = compute_atr(res_df, 14)
+        res_df["adx_14"] = compute_adx(res_df, 14)
+
+        try:
+            htf_series = compute_htf_ema(df_today, span=50)
+            res_df["htf_50_ema"] = htf_series.reindex(res_df.index, method="ffill")
+        except Exception:
+            res_df["htf_50_ema"] = None
 
         latest_closed_bar = res_df.iloc[-1]
         prev_closed_bar = res_df.iloc[-2]
@@ -417,6 +461,40 @@ class LiveEMABot:
         self.latest_ema9 = float(latest_closed_bar["ema_9"])
         self.latest_ema21 = float(latest_closed_bar["ema_21"])
         bar_timestamp = latest_closed_bar.name
+
+        atr_val = float(latest_closed_bar.get("atr_14", 25.0) or 25.0)
+
+        # 3b. ATR Trailing Stop Loss Check
+        if self.trailing_sl and self.current_position and self.latest_spot > 0:
+            pos = self.current_position
+            direction = pos["direction"]
+
+            if direction == "LONG":
+                if self.latest_spot > pos.get("highest_high", self.latest_spot):
+                    pos["highest_high"] = float(self.latest_spot)
+                    new_sl = round(pos["highest_high"] - (self.atr_mult * atr_val), 2)
+                    pos["trailing_sl"] = max(pos.get("trailing_sl", new_sl), new_sl)
+
+                if self.latest_spot <= pos.get("trailing_sl", 0.0):
+                    self.log(
+                        f"🛑 ATR TRAILING STOP TRIGGERED: Spot {self.currency}{self.latest_spot:.2f} hit Trailing SL {self.currency}{pos['trailing_sl']:.2f}. Exiting!",
+                        "WARNING"
+                    )
+                    self.square_off("ATR_TRAILING_SL")
+                    return
+            else:  # SHORT
+                if self.latest_spot < pos.get("lowest_low", self.latest_spot):
+                    pos["lowest_low"] = float(self.latest_spot)
+                    new_sl = round(pos["lowest_low"] + (self.atr_mult * atr_val), 2)
+                    pos["trailing_sl"] = min(pos.get("trailing_sl", new_sl), new_sl)
+
+                if self.latest_spot >= pos.get("trailing_sl", float("inf")):
+                    self.log(
+                        f"🛑 ATR TRAILING STOP TRIGGERED: Spot {self.currency}{self.latest_spot:.2f} hit Trailing SL {self.currency}{pos['trailing_sl']:.2f}. Exiting!",
+                        "WARNING"
+                    )
+                    self.square_off("ATR_TRAILING_SL")
+                    return
 
         # Calculate EMA spread & trend
         spread = round(self.latest_ema9 - self.latest_ema21, 2)
@@ -442,8 +520,9 @@ class LiveEMABot:
             if self.current_position:
                 unrealized = self.get_status().get("unrealized_pnl", 0.0)
                 pnl_sign = "+" if unrealized >= 0 else ""
+                sl_info = f" | T-SL: {self.currency}{self.current_position['trailing_sl']:.2f}" if (self.trailing_sl and "trailing_sl" in self.current_position) else ""
                 self.log(
-                    f"[{bar_time_str}] {self.symbol}: {self.currency}{self.latest_spot:.2f} | 9 EMA: {self.latest_ema9:.1f} | 21 EMA: {self.latest_ema21:.1f} | Pos: {self.current_position['trading_symbol']} ({pnl_sign}{self.currency}{unrealized:.2f})"
+                    f"[{bar_time_str}] {self.symbol}: {self.currency}{self.latest_spot:.2f} | 9 EMA: {self.latest_ema9:.1f} | 21 EMA: {self.latest_ema21:.1f} | Pos: {self.current_position['trading_symbol']} ({pnl_sign}{self.currency}{unrealized:.2f}){sl_info}"
                 )
             else:
                 self.log(
@@ -461,27 +540,74 @@ class LiveEMABot:
             signal_dir = "LONG" if bullish_cross else "SHORT"
             self.log(f"🚨 CROSSOVER SIGNAL: {signal_dir}! (9 EMA crossed 21 EMA: {self.latest_ema9:.1f} vs {self.latest_ema21:.1f})")
 
+            # Quantitative Filter Evaluation
+            vwap_val = float(latest_closed_bar.get("vwap", 0.0) or 0.0)
+            htf_ema = latest_closed_bar.get("htf_50_ema")
+            adx_val = latest_closed_bar.get("adx_14")
+
+            passes_vwap = True
+            if self.filter_vwap and vwap_val > 0:
+                if signal_dir == "LONG" and self.latest_spot < vwap_val:
+                    passes_vwap = False
+                elif signal_dir == "SHORT" and self.latest_spot > vwap_val:
+                    passes_vwap = False
+
+            passes_htf = True
+            if self.filter_htf_trend and pd.notna(htf_ema) and float(htf_ema) > 0:
+                if signal_dir == "LONG" and self.latest_spot < float(htf_ema):
+                    passes_htf = False
+                elif signal_dir == "SHORT" and self.latest_spot > float(htf_ema):
+                    passes_htf = False
+
+            passes_adx = True
+            if self.filter_adx and pd.notna(adx_val):
+                if float(adx_val) < 20.0:
+                    passes_adx = False
+
+            signal_valid = (passes_vwap and passes_htf and passes_adx)
+
+            if not signal_valid:
+                reasons = []
+                if not passes_vwap:
+                    reasons.append(f"VWAP ({self.latest_spot} vs {vwap_val:.2f})")
+                if not passes_htf:
+                    reasons.append(f"HTF 50 EMA ({self.latest_spot} vs {float(htf_ema):.2f})")
+                if not passes_adx:
+                    reasons.append(f"ADX < 20 ({float(adx_val):.1f})")
+                self.log(f"⚠️ Filter block on {signal_dir} signal: {', '.join(reasons)}")
+
             # Check active position
             if self.current_position:
                 if self.current_position["direction"] != signal_dir:
                     self.log(f"Opposing cross confirmed! Exiting current {self.current_position['direction']} position...")
                     self.square_off("OPPOSITE_CROSSOVER")
 
-                    # Immediate Reversal inside entry window
-                    if in_entry_window:
+                    # Immediate Reversal inside entry window if filters pass
+                    if signal_valid and in_entry_window:
                         self.log("Immediate Reversal: Opening reverse position inside entry window...")
-                        self._open_position(signal_dir)
+                        self._open_position(signal_dir, atr_val=atr_val)
+                    elif not signal_valid:
+                        self.log("Reversal skipped: Signal blocked by active filters.")
                     else:
                         self.log(f"Reversal skipped: Current time {self.last_check_time} outside entry window ({self.start_time_str} - {self.cutoff_time_str}).")
             else:
-                # Not in position: check if inside entry window
-                if in_entry_window:
-                    self._open_position(signal_dir)
+                # Not in position: check if inside entry window and filters pass
+                if signal_valid and in_entry_window:
+                    self._open_position(signal_dir, atr_val=atr_val)
+                elif not signal_valid:
+                    self.log("Entry skipped: Signal blocked by active filters.")
                 else:
                     self.log(f"Signal ignored: {curr_time.strftime('%H:%M')} is outside entry window ({self.start_time_str} - {self.cutoff_time_str}).")
 
-    def _open_position(self, direction: str):
+    def _open_position(self, direction: str, atr_val: float = 25.0):
         """Opens a new simulated or live position."""
+        initial_sl = (
+            self.latest_spot - (self.atr_mult * atr_val)
+            if direction == "LONG"
+            else self.latest_spot + (self.atr_mult * atr_val)
+        )
+        sl_msg = f" | T-SL: {self.currency}{initial_sl:.2f}" if self.trailing_sl else ""
+
         if self.is_us:
             action = "BUY" if direction == "LONG" else "SHORT"
             trading_symbol = f"{self.symbol} ({self.lot_size} Shares)"
@@ -498,9 +624,12 @@ class LiveEMABot:
                 "entry_premium": entry_prem,
                 "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "dte": 0.0,
+                "trailing_sl": round(float(initial_sl), 2),
+                "highest_high": float(self.latest_spot),
+                "lowest_low": float(self.latest_spot),
             }
             self.status = "IN_POSITION"
-            self.log(f"🎯 Opened Paper Position: {action} {trading_symbol} @ {self.currency}{entry_prem:.2f} (Spot: {self.currency}{self.latest_spot:.2f}, Qty: {self.lot_size})")
+            self.log(f"🎯 Opened Paper Position: {action} {trading_symbol} @ {self.currency}{entry_prem:.2f} (Spot: {self.currency}{self.latest_spot:.2f}, Qty: {self.lot_size}{sl_msg})")
 
             try:
                 telegram_notifier.notify_trade_entry(
@@ -570,9 +699,12 @@ class LiveEMABot:
             "entry_premium": entry_prem,
             "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "dte": dte,
+            "trailing_sl": round(float(initial_sl), 2),
+            "highest_high": float(self.latest_spot),
+            "lowest_low": float(self.latest_spot),
         }
         self.status = "IN_POSITION"
-        self.log(f"🎯 Opened Position: {action} {trading_symbol} @ ₹{entry_prem:.2f} (Spot: ₹{self.latest_spot:.2f}, Qty: {self.lot_size})")
+        self.log(f"🎯 Opened Position: {action} {trading_symbol} @ ₹{entry_prem:.2f} (Spot: ₹{self.latest_spot:.2f}, Qty: {self.lot_size}{sl_msg})")
 
         # Telegram Alert on Entry
         try:
